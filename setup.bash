@@ -86,7 +86,15 @@ cp -rf encryption.patch renpy-source/src/libhydrogen/impl
 #rm rawproject.zip
 
 pushd renpy-source/src/libhydrogen/impl
-patch -p1 < encryption.patch
+# Idempotent: re-running setup.bash on an already-patched tree must NOT re-apply
+# (GNU patch would detect a reversed patch and REVERT the __SWITCH__ branch,
+# breaking libhydrogen's RNG backend -> "#error Unsupported platform"). Skip if
+# the branch is already present; otherwise apply, discarding any reject files.
+if grep -q '__SWITCH__' random.h; then
+    echo "encryption.patch already applied (random.h has __SWITCH__) — skipping"
+else
+    patch -p1 --forward -r - < encryption.patch
+fi
 popd
 
 pushd renpy-source

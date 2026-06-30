@@ -2,6 +2,14 @@ set -e
 
 export DEVKITPRO=/opt/devkitpro
 
+# Wipe the derived source/header trees before repopulating. A previous build that
+# was interrupted (OOM, Ctrl-C, WSL shutdown) can leave correctly-SIZED but
+# zero-filled files here — unflushed writes on the NTFS-backed drive. rsync's
+# default size+mtime quick-check then sees a same-size file already present and
+# SKIPS re-copying it, so the zeroed header (e.g. pyfreetype.h, renpygl.h) silently
+# poisons every subsequent build (FT_ERRORS_H / GLuint undefined, etc.). Starting
+# from empty guarantees the copies below are always real.
+rm -rf source/module include/module
 mkdir -p source/module include/module
 
 # --- Cythonize Ren'Py 8.5.3 via the root setup.py -> renpy-source/tmp/gen3-static/*.c ---

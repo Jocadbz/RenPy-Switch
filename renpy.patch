@@ -1,6 +1,6 @@
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/__init__.py renpy-source/renpy/__init__.py
 --- .renpy-pristine/renpy/__init__.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/__init__.py	2026-06-24 01:15:34.332246300 +0100
++++ renpy-source/renpy/__init__.py	2026-06-30 16:36:29.272977700 +0100
 @@ -157,6 +157,7 @@
  android: bool = False
  ios: bool = False
@@ -56,7 +56,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/bootstrap.py renpy-source/renpy/bootstrap.py
 --- .renpy-pristine/renpy/bootstrap.py	2026-04-21 03:28:05.000000000 +0100
-+++ renpy-source/renpy/bootstrap.py	2026-06-24 14:48:49.103016000 +0100
++++ renpy-source/renpy/bootstrap.py	2026-06-30 16:36:29.280020400 +0100
 @@ -334,10 +334,19 @@
      gamedir = renpy.__main__.path_to_gamedir(basedir, name)
  
@@ -81,7 +81,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      try:
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/config.py renpy-source/renpy/config.py
 --- .renpy-pristine/renpy/config.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/config.py	2026-06-23 13:58:11.058037300 +0100
++++ renpy-source/renpy/config.py	2026-06-30 16:36:29.285066100 +0100
 @@ -322,7 +322,7 @@
  all_character_callbacks = []
  
@@ -115,7 +115,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  quit_on_mobile_background = False
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/error.py renpy-source/renpy/error.py
 --- .renpy-pristine/renpy/error.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/error.py	2026-06-24 14:38:38.029056500 +0100
++++ renpy-source/renpy/error.py	2026-06-30 16:36:29.291330500 +0100
 @@ -1712,6 +1712,16 @@
      te.simple = simple.getvalue()
      te.full = full.getvalue()
@@ -135,7 +135,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
          f, te.traceback_fn = open_error_file("traceback.txt", "w")
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/gl2/assimp.py renpy-source/renpy/gl2/assimp.py
 --- .renpy-pristine/renpy/gl2/assimp.py	1970-01-01 01:00:00.000000000 +0100
-+++ renpy-source/renpy/gl2/assimp.py	2026-06-24 01:18:53.706471500 +0100
++++ renpy-source/renpy/gl2/assimp.py	2026-06-30 16:36:29.295347300 +0100
 @@ -0,0 +1,40 @@
 +# Switch port stub for renpy.gl2.assimp.
 +#
@@ -179,7 +179,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 +        )
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/gl2/gl2draw.pyx renpy-source/renpy/gl2/gl2draw.pyx
 --- .renpy-pristine/renpy/gl2/gl2draw.pyx	2026-05-03 02:45:34.000000000 +0100
-+++ renpy-source/renpy/gl2/gl2draw.pyx	2026-06-24 11:25:25.277922300 +0100
++++ renpy-source/renpy/gl2/gl2draw.pyx	2026-06-30 16:36:29.299369600 +0100
 @@ -373,7 +373,10 @@
  
          pwidth, pheight = self.select_physical_size(physical_size)
@@ -207,7 +207,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              renpy.game.interface.display_reset = True
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/loader.py renpy-source/renpy/loader.py
 --- .renpy-pristine/renpy/loader.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/loader.py	2026-06-23 13:58:11.064193200 +0100
++++ renpy-source/renpy/loader.py	2026-06-30 16:36:29.305418300 +0100
 @@ -441,7 +441,7 @@
          else:
              files = game_files
@@ -228,7 +228,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              return fn
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/loadsave.py renpy-source/renpy/loadsave.py
 --- .renpy-pristine/renpy/loadsave.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/loadsave.py	2026-06-23 13:58:11.069709900 +0100
++++ renpy-source/renpy/loadsave.py	2026-06-30 16:36:29.310976300 +0100
 @@ -370,7 +370,7 @@
  
      autosave_not_running.clear()
@@ -240,7 +240,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
          autosave_thread.start()
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/log.py renpy-source/renpy/log.py
 --- .renpy-pristine/renpy/log.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/log.py	2026-06-24 01:51:59.941971900 +0100
++++ renpy-source/renpy/log.py	2026-06-30 16:36:29.317038900 +0100
 @@ -90,6 +90,13 @@
          if self.file is False:
              return False
@@ -257,7 +257,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/main.py renpy-source/renpy/main.py
 --- .renpy-pristine/renpy/main.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/main.py	2026-06-24 01:21:20.354746300 +0100
++++ renpy-source/renpy/main.py	2026-06-30 16:36:29.323056100 +0100
 @@ -349,6 +349,11 @@
      renpy.config.commondir = renpy.__main__.path_to_common(renpy.config.renpy_base)  # E1101 @UndefinedVariable
      renpy.config.searchpath = renpy.__main__.predefined_searchpath(renpy.config.commondir)  # E1101 @UndefinedVariable
@@ -272,7 +272,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/persistent.py renpy-source/renpy/persistent.py
 --- .renpy-pristine/renpy/persistent.py	2026-03-21 02:53:28.000000000 +0000
-+++ renpy-source/renpy/persistent.py	2026-06-23 13:58:11.083894600 +0100
++++ renpy-source/renpy/persistent.py	2026-06-30 16:36:29.329097600 +0100
 @@ -600,6 +600,9 @@
          # This is better than not working at all.
          files = [renpy.config.savedir]
@@ -285,7 +285,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/preferences.py renpy-source/renpy/preferences.py
 --- .renpy-pristine/renpy/preferences.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/preferences.py	2026-06-24 12:36:12.715967500 +0100
++++ renpy-source/renpy/preferences.py	2026-06-30 16:36:29.333355400 +0100
 @@ -107,7 +107,7 @@
          all_preferences.append(self)
  
@@ -306,7 +306,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  Preference("video_image_fallback", False)
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/pygame/display.pyx renpy-source/renpy/pygame/display.pyx
 --- .renpy-pristine/renpy/pygame/display.pyx	2026-03-14 00:55:08.000000000 +0000
-+++ renpy-source/renpy/pygame/display.pyx	2026-06-24 18:27:59.987754400 +0100
++++ renpy-source/renpy/pygame/display.pyx	2026-06-30 16:36:29.340415300 +0100
 @@ -159,6 +159,17 @@
                  else:
                      SDL_SetWindowTitle(self.window, title)
@@ -327,7 +327,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              flags |= SDL_WINDOW_HIDDEN
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/savelocation.py renpy-source/renpy/savelocation.py
 --- .renpy-pristine/renpy/savelocation.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/savelocation.py	2026-06-23 13:58:11.089949100 +0100
++++ renpy-source/renpy/savelocation.py	2026-06-30 16:36:29.345994700 +0100
 @@ -37,6 +37,9 @@
  from renpy.loadsave import clear_slot, safe_rename
  import shutil
@@ -360,7 +360,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      with scan_thread_condition:
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/script.py renpy-source/renpy/script.py
 --- .renpy-pristine/renpy/script.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/script.py	2026-06-23 13:58:11.096573600 +0100
++++ renpy-source/renpy/script.py	2026-06-30 16:36:29.355062700 +0100
 @@ -900,7 +900,7 @@
                      bad_reduction_name=f"<{fn} transformed rpyc data>",
                  )
@@ -372,7 +372,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
                              self.write_rpyc_header(f)
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy.py renpy-source/renpy.py
 --- .renpy-pristine/renpy.py	2026-05-16 02:28:26.000000000 +0100
-+++ renpy-source/renpy.py	2026-06-23 13:58:11.101598900 +0100
++++ renpy-source/renpy.py	2026-06-30 16:36:29.361156700 +0100
 @@ -44,6 +44,9 @@
          The basename of the executable, with the extension removed.
      """
@@ -425,7 +425,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/encryption.patch renpy-source/src/libhydrogen/impl/encryption.patch
 --- .renpy-pristine/src/libhydrogen/impl/encryption.patch	1970-01-01 01:00:00.000000000 +0100
-+++ renpy-source/src/libhydrogen/impl/encryption.patch	2026-06-23 13:58:11.027353700 +0100
++++ renpy-source/src/libhydrogen/impl/encryption.patch	2026-06-30 16:36:29.250396500 +0100
 @@ -0,0 +1,13 @@
 +diff -Naur a/random.h b/random.h
 +--- a/random.h
@@ -442,7 +442,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 + #endif
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/random/switch_enc.h renpy-source/src/libhydrogen/impl/random/switch_enc.h
 --- .renpy-pristine/src/libhydrogen/impl/random/switch_enc.h	1970-01-01 01:00:00.000000000 +0100
-+++ renpy-source/src/libhydrogen/impl/random/switch_enc.h	2026-06-23 13:58:11.015807900 +0100
++++ renpy-source/src/libhydrogen/impl/random/switch_enc.h	2026-06-30 16:36:29.238520400 +0100
 @@ -0,0 +1,30 @@
 +#ifndef hydro_random_switch_enc_H
 +#define hydro_random_switch_enc_H
@@ -476,7 +476,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 +#endif
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/random.h renpy-source/src/libhydrogen/impl/random.h
 --- .renpy-pristine/src/libhydrogen/impl/random.h	2025-07-13 06:38:59.000000000 +0100
-+++ renpy-source/src/libhydrogen/impl/random.h	2026-06-23 13:58:11.039177400 +0100
++++ renpy-source/src/libhydrogen/impl/random.h	2026-06-30 16:36:29.263381400 +0100
 @@ -29,6 +29,8 @@
  # include "random/stm32.h"
  #elif defined(__RTTHREAD__)
