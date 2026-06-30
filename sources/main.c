@@ -4,6 +4,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <locale.h>
+#include <unistd.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <png.h>
@@ -21,6 +22,26 @@
 
 u64 cur_progid = 0;
 AccountUid userID = {0};
+
+/* -------------------------------------------------------
+   Crash handler. Native crashes (in SDL/GL/Mesa/libnx) produce no Python
+   traceback, and Ryujinx's GPU debug log shows only "Success", so dump the
+   faulting program counter here. error_desc tells the fault type; PC/LR locate
+   it (subtract the NRO load base, then addr2line on renpy-switch.elf). If this
+   never fires but the app still dies, it's a hang (deadlock), not a crash.
+------------------------------------------------------- */
+__attribute__((aligned(16))) u8 __nx_exception_stack[0x1000];
+u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
+
+void __libnx_exception_handler(ThreadExceptionDump *ctx)
+{
+    printf("\n[main] *** GUEST CPU EXCEPTION (error_desc=0x%x) ***\n", (unsigned)ctx->error_desc);
+    printf("[main]  PC = 0x%016lx\n", (unsigned long)ctx->pc.x);
+    printf("[main]  LR = 0x%016lx\n", (unsigned long)ctx->lr.x);
+    printf("[main]  FP = 0x%016lx\n", (unsigned long)ctx->fp.x);
+    printf("[main]  SP = 0x%016lx\n", (unsigned long)ctx->sp.x);
+    fflush(stdout);
+}
 
 
 void show_logos(void)
@@ -528,12 +549,43 @@ PyMODINIT_FUNC PyInit_renpy_gl2_gl2texture(void);
 PyMODINIT_FUNC PyInit_renpy_uguu_gl(void);
 PyMODINIT_FUNC PyInit_renpy_uguu_uguu(void);
 
+/* 8.5.3-specific modules (merged pygame, new cython modules) */
+PyMODINIT_FUNC PyInit_renpy_astsupport(void);
+PyMODINIT_FUNC PyInit_renpy_cslots(void);
+PyMODINIT_FUNC PyInit_renpy_gl2_gl2uniform(void);
+PyMODINIT_FUNC PyInit_renpy_text_bidi(void);
+PyMODINIT_FUNC PyInit_renpy_text_hbfont(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_error(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_color(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_controller(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_rect(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_rwobject(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_surface(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_display(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_event(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_locals(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_key(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_mouse(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_joystick(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_power(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_pygame_time(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_image(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_transform(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_gfxdraw(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_draw(void);
+PyMODINIT_FUNC PyInit_renpy_pygame_scrap(void);
+
 
 /* -------------------------------------------------------
    Heap override
 ------------------------------------------------------- */
 
-void __libnx_initheap(void)
+/* DIAGNOSTIC: renamed from __libnx_initheap so libnx uses its default heap init.
+   On real hardware the app hangs before any logging exists; the custom override
+   (svcGetInfo/svcSetHeapSize with a hand-computed size) is the prime suspect since
+   it runs before everything and behaves differently on console vs Ryujinx.
+   Rename back to __libnx_initheap to re-enable. */
+void renpyswitch_initheap_unused(void)
 {
     void* addr = NULL;
     u64 size = 0;
@@ -593,11 +645,14 @@ void userAppInit()
     nsInitialize();
     fsdevMountSdmc();
 
-    freopen("sdmc:/renpy_switch.log", "w", stdout);
-    freopen("sdmc:/renpy_switch.log", "w", stderr);
+    freopen("sdmc:/renpy_switch.log", "a", stdout);
+    /* Don't freopen the SAME file twice — opening renpy_switch.log a second time
+       for append fails on the Switch FS, leaving fd 2 (stderr) dangling and
+       swallowing every Python traceback. Point stderr at stdout's handle (2>&1). */
+    dup2(fileno(stdout), fileno(stderr));
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    setvbuf(stderr, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
 
     printf("=== Ren'Py 8 Switch launcher ===\n");
     
@@ -660,6 +715,11 @@ void userAppInit()
 
     romfsInit();
     socketInitializeDefault();
+
+    /* If launched via `nxlink`, redirect stdout/stderr to the nxlink host so we get
+       real-time console output over the network. Returns -1 when not launched via
+       nxlink, in which case the sdmc:/renpy_switch.log redirect above stays active. */
+    nxlinkStdio();
 }
 
 void userAppExit(void)
@@ -680,6 +740,7 @@ void userAppExit(void)
 
 void show_error(const char* message)
 {
+    printf("[main] show_error: %s\n", message); fflush(stdout);
     PyErr_Print();
 
     ErrorSystemConfig c;
@@ -706,11 +767,61 @@ static void on_applet_hook(AppletHookType hook, void *param)
 }
 
 /* -------------------------------------------------------
+   Boot splash
+------------------------------------------------------- */
+
+/* Draw a splash via the SDL_Renderer path (works on hardware, unlike Ren'Py's
+   software-surface presplash). We present the image and LEAVE the window up: the
+   Switch keeps showing the last presented frame during the ~5-8s Python/Ren'Py
+   init (which renders nothing), and Ren'Py's first frame later replaces it.
+   No-op if romfs:/Contents/splash.png is absent. */
+static void show_splash(void)
+{
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
+        printf("[splash] SDL video init failed: %s\n", SDL_GetError()); fflush(stdout);
+        return;
+    }
+    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
+
+    SDL_Window *win = SDL_CreateWindow("Splash",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1920, 1080,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN);
+    if (!win) { printf("[splash] window failed: %s\n", SDL_GetError()); fflush(stdout); return; }
+
+    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    if (!ren) { printf("[splash] renderer failed: %s\n", SDL_GetError()); fflush(stdout); SDL_DestroyWindow(win); return; }
+
+    SDL_Texture *tex = IMG_LoadTexture(ren, "romfs:/Contents/splash.png");
+    if (!tex) {
+        printf("[splash] no splash.png (%s); skipping\n", IMG_GetError()); fflush(stdout);
+        SDL_DestroyRenderer(ren); SDL_DestroyWindow(win);
+        return;
+    }
+
+    int sw = 0, sh = 0;
+    SDL_GetRendererOutputSize(ren, &sw, &sh);
+    SDL_Rect dst = {0, 0, sw, sh};
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderClear(ren);
+    SDL_RenderCopy(ren, tex, NULL, &dst);
+    SDL_RenderPresent(ren);
+    SDL_DestroyTexture(tex);
+    printf("[splash] shown (%dx%d); window left for Ren'Py to adopt\n", sw, sh); fflush(stdout);
+
+    /* Leave the window + GL context current (do NOT destroy ren/win or quit video)
+       and tell Ren'Py's display.pyx to adopt THIS window instead of creating a
+       second one on the single nwindow. The presented splash persists on the
+       framebuffer through init until Ren'Py's first frame draws over it. */
+    setenv("RENPY_ADOPT_GL_WINDOW", "1", 1);
+    (void)win; (void)ren;
+}
+
+/* -------------------------------------------------------
    Main
 ------------------------------------------------------- */
 
 int main(int argc, char* argv[])
-{  
+{
    	// Проверяем, что пользователь выбран
     if (!accountUidIsValid(&userID)) {
         printf("No user selected. Game cannot start.\n");
@@ -729,6 +840,14 @@ int main(int argc, char* argv[])
     video_player_init();
     play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f);
     video_player_quit();
+
+    /* Boot splash disabled: the leave-window adoption faults on hardware because SDL
+       forbids mixing an SDL_Renderer with a separate GL context on one window. To do
+       this cleanly main.c must create a *raw GL* context (no SDL_Renderer) and Ren'Py
+       must adopt that same context. Until then, keep the known-good boot. */
+    /* show_splash(); */
+
+    printf("[main] video/logos done; configuring Python\n"); fflush(stdout);
     // printf("=== Testing video playback ===\n");
     
     // // Инициализируем видео-плеер
@@ -760,6 +879,16 @@ int main(int argc, char* argv[])
     chdir("romfs:/Contents");
     setlocale(LC_ALL, "C");
     setenv("MESA_NO_ERROR", "1", 1);
+    /* Force double-buffering. The Switch BufferQueue here only allows 1 acquired
+       buffer (2-slot/double-buffered), but Mesa defaults to triple-buffering and
+       tries to keep 2 in flight -> "max acquired buffer count: 2 (max: 1)" and a
+       swap deadlock after a few frames. Pin double-buffering to match the queue. */
+    setenv("SDL_VIDEO_DOUBLE_BUFFER", "1", 1);
+    /* Disable vsync. The GL swap was blocking on a vblank/fence event that never
+       returns on the Switch (menu freezes ~1-2s, then the GPU wait times out and
+       Ryujinx closes). Without vsync, eglSwapBuffers does not wait on vblank. */
+    setenv("vblank_mode", "0", 1);
+    setenv("RENPY_GL_VSYNC", "0", 1);
 
     appletLockExit();
     appletHook(&applet_hook_cookie, on_applet_hook, NULL);
@@ -787,13 +916,22 @@ int main(int argc, char* argv[])
     status = PyConfig_SetString(&config, &config.exec_prefix, L"romfs:/Contents");
     if (PyStatus_Exception(status)) goto exception;
    
-    /* Добавляем путь к корневой папке renpy/common */
-    PyWideStringList_Append(
-    &config.module_search_paths,
-    L"romfs:/Contents/renpy/common"
-    );
+    /* Give the import system the stdlib (inside lib.zip) + Ren'Py BEFORE init, and
+       tell Python to use exactly these paths instead of computing from prefix/home.
+       Without this, Py_InitializeFromConfig can't import 'encodings' and aborts. */
+    config.module_search_paths_set = 1;
+    PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents/lib.zip");
+    PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents");
+    PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents/renpy/common");
    
     /* ---- Critical for Python 3.9 embedded ---- */
+    /* Switch has no /dev/urandom and newlib's entropy call fails, which makes
+       _Py_HashRandomization_Init abort. Pin a fixed hash seed (0 = randomization
+       off) so init never asks the OS for entropy. */
+    config.use_hash_seed = 1;
+    config.hash_seed = 0;
+    /* Unbuffered Python stdio so tracebacks reach the log before we exit. */
+    config.buffered_stdio = 0;
     config.isolated = 0;
     config.use_environment = 0;
     config.site_import = 0;
@@ -843,33 +981,29 @@ int main(int argc, char* argv[])
         {"_nx", PyInit__nx},
         {"_otrhlibnx", PyInit__otrhlibnx},
 
-        {"pygame_sdl2.color", PyInit_color},
-        {"pygame_sdl2.controller", PyInit_controller},
-        {"pygame_sdl2.display", PyInit_display},
-        {"pygame_sdl2.draw", PyInit_draw},
-        {"pygame_sdl2.error", PyInit_error},
-        {"pygame_sdl2.event", PyInit_event},
-        {"pygame_sdl2.font", PyInit_font},
-        {"pygame_sdl2.gfxdraw", PyInit_gfxdraw},
-        {"pygame_sdl2.image", PyInit_image},
-        {"pygame_sdl2.joystick", PyInit_joystick},
-        {"pygame_sdl2.key", PyInit_key},
-        {"pygame_sdl2.locals", PyInit_locals},
-        {"pygame_sdl2.mouse", PyInit_mouse},
-        {"pygame_sdl2.power", PyInit_power},
-        {"pygame_sdl2.pygame_time", PyInit_pygame_time},
-        {"pygame_sdl2.rect", PyInit_rect}, 
-        {"pygame_sdl2.rwobject", PyInit_rwobject},
-        {"pygame_sdl2.scrap", PyInit_scrap},
-        {"pygame_sdl2.surface", PyInit_surface},
-        {"pygame_sdl2.transform", PyInit_transform},
-   
-        {"pygame_sdl2.render", PyInit_render},
-        {"pygame_sdl2.mixer", PyInit_mixer},
-        {"pygame_sdl2.mixer_music", PyInit_mixer_music},
+        {"renpy.pygame.error", PyInit_renpy_pygame_error},
+        {"renpy.pygame.color", PyInit_renpy_pygame_color},
+        {"renpy.pygame.controller", PyInit_renpy_pygame_controller},
+        {"renpy.pygame.rect", PyInit_renpy_pygame_rect},
+        {"renpy.pygame.rwobject", PyInit_renpy_pygame_rwobject},
+        {"renpy.pygame.surface", PyInit_renpy_pygame_surface},
+        {"renpy.pygame.display", PyInit_renpy_pygame_display},
+        {"renpy.pygame.event", PyInit_renpy_pygame_event},
+        {"renpy.pygame.locals", PyInit_renpy_pygame_locals},
+        {"renpy.pygame.key", PyInit_renpy_pygame_key},
+        {"renpy.pygame.mouse", PyInit_renpy_pygame_mouse},
+        {"renpy.pygame.joystick", PyInit_renpy_pygame_joystick},
+        {"renpy.pygame.power", PyInit_renpy_pygame_power},
+        {"renpy.pygame.pygame_time", PyInit_renpy_pygame_pygame_time},
+        {"renpy.pygame.image", PyInit_renpy_pygame_image},
+        {"renpy.pygame.transform", PyInit_renpy_pygame_transform},
+        {"renpy.pygame.gfxdraw", PyInit_renpy_pygame_gfxdraw},
+        {"renpy.pygame.draw", PyInit_renpy_pygame_draw},
+        {"renpy.pygame.scrap", PyInit_renpy_pygame_scrap},
 
         {"_renpy", PyInit__renpy},
-        {"_renpybidi", PyInit__renpybidi},
+        {"renpy.astsupport", PyInit_renpy_astsupport},
+        {"renpy.cslots", PyInit_renpy_cslots},
 
         {"renpy.audio.filter", PyInit_renpy_audio_filter},
         {"renpy.audio.renpysound", PyInit_renpy_audio_renpysound},
@@ -882,6 +1016,8 @@ int main(int argc, char* argv[])
         {"renpy.text.ftfont", PyInit_renpy_text_ftfont},
         {"renpy.text.textsupport", PyInit_renpy_text_textsupport},
         {"renpy.text.texwrap", PyInit_renpy_text_texwrap},
+        {"renpy.text.hbfont", PyInit_renpy_text_hbfont},
+        {"renpy.text.bidi", PyInit_renpy_text_bidi},
         {"renpy.pydict", PyInit_renpy_pydict},
         {"renpy.lexersupport", PyInit_renpy_lexersupport},
         {"renpy.style", PyInit_renpy_style},
@@ -898,11 +1034,7 @@ int main(int argc, char* argv[])
         {"renpy.styledata.styleclass", PyInit_renpy_styledata_styleclass},
         {"renpy.styledata.stylesets", PyInit_renpy_styledata_stylesets},
 
-        {"renpy.gl.gldraw", PyInit_renpy_gl_gldraw},
-        {"renpy.gl.glenviron_shader", PyInit_renpy_gl_glenviron_shader},
-        {"renpy.gl.glrtt_copy", PyInit_renpy_gl_glrtt_copy},
-        {"renpy.gl.glrtt_fbo", PyInit_renpy_gl_glrtt_fbo},
-        {"renpy.gl.gltexture", PyInit_renpy_gl_gltexture},
+        /* renpy.gl.* (legacy GL renderer) removed in 8.5.3 — gl2 only */
 
         {"renpy.gl2.gl2draw", PyInit_renpy_gl2_gl2draw},
         {"renpy.gl2.gl2mesh", PyInit_renpy_gl2_gl2mesh},
@@ -912,6 +1044,7 @@ int main(int argc, char* argv[])
         {"renpy.gl2.gl2polygon", PyInit_renpy_gl2_gl2polygon},
         {"renpy.gl2.gl2shader", PyInit_renpy_gl2_gl2shader},
         {"renpy.gl2.gl2texture", PyInit_renpy_gl2_gl2texture},
+        {"renpy.gl2.gl2uniform", PyInit_renpy_gl2_gl2uniform},
 
         {"renpy.uguu.gl", PyInit_renpy_uguu_gl},
         {"renpy.uguu.uguu", PyInit_renpy_uguu_uguu},
@@ -931,21 +1064,37 @@ int main(int argc, char* argv[])
         show_error("Could not find renpy.py");
     }   
 
+    printf("[main] registering builtins + initializing Python\n"); fflush(stdout);
     PyImport_ExtendInittab(builtins);
-   
+
     /* ---- Initialize Python ---- */
+    printf("[main] calling Py_InitializeFromConfig\n"); fflush(stdout);
     status = Py_InitializeFromConfig(&config);
-    if (PyStatus_Exception(status)) goto exception;
+    if (PyStatus_Exception(status)) {
+        printf("[main] Py_InitializeFromConfig FAILED: func=%s err_msg=%s\n",
+               status.func ? status.func : "(null)",
+               status.err_msg ? status.err_msg : "(null)");
+        fflush(stdout);
+        goto exception;
+    }
     PyConfig_Clear(&config);
+    printf("[main] Python initialized OK\n"); fflush(stdout);
 
 
-    PyRun_SimpleString("import pygame_sdl2");
-   
+    /* 8.5.3: pygame_sdl2 is merged into renpy.pygame; renpy.py imports what it needs. */
+
 
     int python_result;
     python_result = PyRun_SimpleString(
-    "import sys\n"
+    "import sys, os\n"
     "sys.path.insert(0, 'romfs:/Contents/lib.zip')\n"
+    /* Log the real platform string CPython was built with, before we override it. */
+    "os.write(1, ('[main] sys.platform (real) = %r\\n' % (sys.platform,)).encode('utf-8','replace'))\n"
+    /* PyNX's CPython doesn't report platform 'horizon', but the whole Switch port
+       keys off `sys.platform == 'horizon'` (renpy/__init__.py sets renpy.switch from
+       it). Force it here so every Switch conditional fires as designed. */
+    "sys.platform = 'horizon'\n"
+    "os.write(1, ('[main] sys.platform (now)  = %r\\n' % (sys.platform,)).encode('utf-8','replace'))\n"
     );
     
     if (python_result == -1)
@@ -961,17 +1110,52 @@ int main(int argc, char* argv[])
     }
 
     x("os");
-    x("pygame_sdl2");
     x("encodings");
 
     #undef x
 
     /* ---- Run Ren'Py ---- */
-    int rc = PyRun_SimpleFileEx(
-        renpy_file,
-        "romfs:/Contents/renpy.py",
-        1
-    );
+    printf("[main] running renpy.py ...\n"); fflush(stdout);
+
+    /* Run renpy.py in the __main__ namespace so `__name__ == "__main__"` and
+       `sys.modules["__main__"]` resolve correctly for Ren'Py's bootstrap. We use
+       PyRun_FileEx (not the *Simple* variant) so that on error the exception stays
+       SET instead of being auto-printed to sys.stderr — which Ren'Py swaps around.
+       We then dump the formatted traceback straight to fd 2 (our log) via os.write,
+       which no sys.stderr reassignment can hide. */
+    int rc = 0;
+    {
+        PyObject *main_mod  = PyImport_AddModule("__main__");   /* borrowed */
+        PyObject *main_dict = PyModule_GetDict(main_mod);       /* borrowed */
+        /* Normal script execution sets __file__; PyRun_FileEx does not, and
+           renpy.py references it on non-horizon paths. Set it defensively. */
+        {
+            PyObject *fn = PyUnicode_FromString("romfs:/Contents/renpy.py");
+            PyDict_SetItemString(main_dict, "__file__", fn);
+            Py_DECREF(fn);
+        }
+        PyObject *res = PyRun_FileEx(renpy_file, "romfs:/Contents/renpy.py",
+                                     Py_file_input, main_dict, main_dict, 1 /*closeit*/);
+        if (res == NULL) {
+            rc = -1;
+            PyObject *exc = PyErr_GetRaisedException();         /* steals ref, clears error */
+            PyDict_SetItemString(main_dict, "_renpy_exc", exc ? exc : Py_None);
+            PyRun_SimpleString(
+                "import os, traceback\n"
+                "try:\n"
+                "    _t = ''.join(traceback.format_exception(_renpy_exc))\n"
+                "except BaseException as _e:\n"
+                "    _t = '[py] could not format exception: %r\\n' % (_e,)\n"
+                "os.write(2, b'[py] === renpy.py traceback ===\\n')\n"
+                "os.write(2, _t.encode('utf-8', 'replace'))\n"
+                "os.write(2, b'[py] === end traceback ===\\n')\n"
+            );
+            Py_XDECREF(exc);
+        } else {
+            Py_DECREF(res);
+        }
+    }
+    printf("[main] renpy.py returned %d\n", rc); fflush(stdout);
 
     if (rc != 0) {
         show_error("Ren'Py execution failed");

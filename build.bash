@@ -2,97 +2,46 @@ set -e
 
 export DEVKITPRO=/opt/devkitpro
 
-mkdir -p source/module
-mkdir -p include/module include/module/pygame_sdl2
+mkdir -p source/module include/module
 
-# Установка заголовочных файлов
-echo "Installing headers..."
-pushd pygame_sdl2-source
-RENPY_STATIC=1 python3.9 setup.py install_headers
-popd
-
-pushd pygame_sdl2-source
-PYGAME_SDL2_STATIC=1 python3.9 setup.py build_ext --inplace || true
-rm -rf gen
-popd
-
-cp -rf ffmedia.c renpy-source/module
-
-pushd renpy-source/module
-# СОЗДАЕМ ДИРЕКТОРИЮ ПЕРЕД СБОРКОЙ
-mkdir -p renpy/audio
-mkdir -p renpy/styledata
-mkdir -p renpy/display
-mkdir -p renpy/uguu
-mkdir -p renpy/gl
-mkdir -p renpy/gl2
-mkdir -p renpy/text
-RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local RENPY_STATIC=1 python3.9 setup.py build_ext --inplace || true
-rm -rf gen
+# --- Cythonize Ren'Py 8.5.3 via the root setup.py -> renpy-source/tmp/gen3-static/*.c ---
+# build_ext may fail to LINK against host libs, but it still generates the .c we need.
+echo "Cythonizing Ren'Py 8.5.3..."
+pushd renpy-source
+RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local RENPY_STATIC=1 python3.13 setup.py build_ext --inplace -j"$(nproc)" || true
 popd
 
 
 
-# Копируем .c файлы из pygame_sdl2-source
-rsync -avm --include='*/' --include='*.c' --exclude='*' pygame_sdl2-source/ source/module
+GEN=renpy-source/tmp/gen3-static
 
+# --- Gather C sources into a flat source/module/ (CMake globs these) ---
+cp "$GEN"/*.c source/module/                          # cython-generated modules
+cp renpy-source/src/*.c source/module/                # hand-written C (core, ffmedia, ftsupport, ...)
+cp renpy-source/src/*.cc source/module/ 2>/dev/null || true   # assimpio.cc (C++)
+cp renpy-source/src/pygame/*.c source/module/         # alphablit, write_jpeg/png, rotozoom, gfxprimitives
+cp renpy-source/src/tinyfiledialogs/*.c source/module/
+cp renpy-source/src/libhydrogen/hydrogen.c source/module/
+rm -f source/module/live2dcsm.c                       # Live2D/Cubism: not built (no CUBISM SDK)
+rm -f source/module/assimpio.cc source/module/renpy.gl2.assimp.c   # assimp 3D model loader: no libassimp on Switch
+rm -f source/module/tinyfiledialogs.c source/module/renpy.tfd.c    # native file dialogs (termios): not on Switch
+rm -f source/module/hydrogen.c     # libhydrogen built via renpy.encryption (unity build) — avoid duplicate symbols
 
-cp -rf ffmedia.c renpy-source/module
-# Копируем .c файлы из renpy-source/module
-rsync -avm --include='*/' --include='*.c' --exclude='*' renpy-source/module/ source/module
-#debug
-echo "MY DEBUG!"
-ls -R source/module
-
-# Перемещаем все файлы из поддиректорий в source/module, не перезаписывая существующие
-find source/module -mindepth 2 -type f -exec mv -n -t source/module {} +
-
-# Удаляем пустые директории
-find source/module -type d -empty -delete
-
-# Копируем .h файлы из pygame_sdl2-source
-rsync -avm --include='*/' --include='*.h' --exclude='*' pygame_sdl2-source/ include/module/pygame_sdl2
-
-# Перемещаем все .h файлы из поддиректорий, не перезаписывая существующие
-find include/module/pygame_sdl2 -mindepth 2 -type f -exec mv -n -t include/module/pygame_sdl2 {} +
-
-# Перемещаем surface.h
-mv include/module/pygame_sdl2/surface.h include/module/pygame_sdl2/src
-
-# Копируем .h файлы из renpy-source/module
-rsync -avm --include='*/' --include='*.h' --exclude='*' renpy-source/module/ include/module
-
-# Copy switch.h
-cp switch_enc.h include/module/libhydrogen/impl/random
-
-# Перемещаем hydrogen.c
-mv source/module/hydrogen.c include/module/libhydrogen
-
-# Удаляем пустые директории
+# --- Gather headers into a flat include/module/ ---
+cp "$GEN"/*.h include/module/ 2>/dev/null || true
+rsync -am --include='*/' --include='*.h' --exclude='*' renpy-source/src/ include/module/
+rsync -am --include='*/' --include='*.h' --exclude='*' renpy-source/renpy/ include/module/
+find include/module -mindepth 2 -name '*.h' -exec mv -n -t include/module {} + 2>/dev/null || true
+cp -r renpy-source/src/libhydrogen include/module/libhydrogen
 find include/module -type d -empty -delete
-
-
-pushd pygame_sdl2-source
-python3.9 setup.py build
-python3.9 setup.py install_headers
-python3.9 setup.py install
-popd
-
-pushd renpy-source/module
-RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local python3.9 setup.py build
-RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local python3.9 setup.py install
-popd
 
 cp sources/main.c source/main.c
 cp sources/video_player.c source/video_player.c
 cp sources/video_player.h source/video_player.h
+cp sources/switch_stubs.c source/module/switch_stubs.c   # ENOSYS stubs for libc funcs newlib lacks
 
-pushd source/module
-echo "== list source/module =="
-ls
-rm tinyfiledialogs.c #renpy.encryption.c  #hydrogen.c 
-#rm tinyfiledialogs.c _renpytfd.c sdl2.c pygame_sdl2.mixer.c pygame_sdl2.font.c pygame_sdl2.mixer_music.c
-popd
+echo "== source/module contents =="
+ls source/module
 
 source /opt/devkitpro/switchvars.sh
 
@@ -100,7 +49,7 @@ rm -rf build
 mkdir build
 pushd build
 cmake ..
-make || true
+make -j"$(nproc)" || true
 echo "===== PyInit symbols ====="
 nm CMakeFiles/renpy-switch.dir/source/module/*.o | grep PyInit || true
 echo "===== PyInit symbols ====="
@@ -112,62 +61,78 @@ mkdir -p ./raw/switch/exefs
 #cp -r /usr/local/lib/python3.9/dist-packages ./raw/switch/exefs2
 
 mv ./build/renpy-switch.nso ./raw/switch/exefs/main
-rm -rf build include source pygame_sdl2-source
+
+# --- Stage the Python tree + game, then compile .rpy -> .rpyc with the desktop SDK ---
+# GAME_DIR: a Ren'Py project's game/ dir to embed (default: the bundled the_question demo).
+GAME_DIR="${GAME_DIR:-renpy-source/the_question/game}"
 
 rm -rf renpy_clear
-mkdir renpy_clear
+mkdir -p renpy_clear/game
 cp ./renpy_sdk/*/renpy.sh ./renpy_clear/renpy.sh
 cp -r ./renpy_sdk/*/lib ./renpy_clear/lib
-#cp -r ./renpy_sdk ./renpy_clear/sdk
-mkdir ./renpy_clear/game
-cp -r ./renpy-source/module ./renpy_clear/module
 cp -r ./renpy-source/renpy ./renpy_clear/renpy
 cp ./renpy-source/renpy.py ./renpy_clear/renpy.py
-mv ./script.rpy ./renpy_clear/game/script.rpy
-cp ./renpy_sdk/*/*.exe ./renpy_clear/
-rm -rf renpy-source renpy_sdk ./renpy_clear/lib/*mac*
+cp -r "$GAME_DIR"/. ./renpy_clear/game/
+rm -rf ./renpy_clear/lib/*mac*
 
 pushd renpy_clear
-./renpy.sh --compile . compile
-find ./renpy/ -regex ".*\.\(pxd\|pyx\|rpym\|pxi\)" -delete  # py\|rpy\| ???
+./renpy.sh --compile . compile || true
+find ./renpy/ -regex ".*\.\(pxd\|pyx\|rpym\|pxi\)" -delete
 popd
 
 
-rm -rf private
-mkdir private
-mkdir private/lib
-cp -r renpy_clear/renpy private/renpy
-cp -r renpy_clear/lib/python3.9/ private/lib/
-cp renpy_clear/renpy.py private/main.py
-rm -rf private/renpy/common
-python3.9 generate_private.py
-rm -rf private
 
-
-
-# Создаем целевую директорию (если не существует)
-mkdir -p ./raw/switchlibs
-
-
-
+# --- Assemble romfs/Contents (clean first so stale files don't linger) ---
+rm -rf ./raw/switch/romfs/Contents/renpy ./raw/switch/romfs/Contents/game ./raw/switch/romfs/Contents/renpy.py
 mkdir -p ./raw/switch/romfs/Contents/renpy
-mkdir -p ./raw/lib/sw
-#mkdir -p ./raw/switchlibs/
-#mkdir -p ./raw/android/assets/renpy/common
 cp -r ./renpy_clear/renpy/common ./raw/switch/romfs/Contents/renpy/
-#cp -r ./renpy_clear/renpy/common ./raw/android/assets/renpy/
-#mv private.mp3 ./raw/android/assets
+# sdk-fonts (SourceHanSansLite CJK, Vazirmatn RTL) live outside renpy/common but are
+# needed at runtime (e.g. the preferences screen). Fold them into common (on the
+# font searchpath) so load_face() can find them.
+cp ./renpy-source/sdk-fonts/*.ttf ./raw/switch/romfs/Contents/renpy/common/ 2>/dev/null || true
 cp ./renpy_clear/renpy.py ./raw/switch/romfs/Contents/
-#unzip -qq ./raw/lib.zip -d ./raw/lib/
-#rm ./raw/lib.zip
+cp -r ./renpy_clear/game ./raw/switch/romfs/Contents/game
+# Optional boot splash shown by main.c during init — drop art at sources/splash.png.
+[ -f sources/splash.png ] && cp sources/splash.png ./raw/switch/romfs/Contents/splash.png || true
 
-#cp -r $DEVKITPRO/portlibs/switch/. ./raw/switchlibs
-cp -r ./renpy_clear/lib/python3.9/. ./raw/lib
-cp -r ./renpy_clear/renpy ./raw/lib
-rm -rf ./raw/lib/renpy/common/
-7z a -tzip ./raw/switch/romfs/Contents/lib.zip ./raw/lib/*
-#cp -r ./raw/lib ./raw/switch/romfs/Contents/
+# --- lib.zip = FULL CPython 3.13 stdlib + Ren'Py python package ---
+# PyNX's python.zip ships only a subset of the stdlib (it omits packages like re/),
+# so we package the complete Lib tree that libpython3.13.a was built from instead.
+FULLLIB="${FULLLIB:-../PyNX_python3.13.0_horizonOS_switch/python_build/Python-3.13.14/Lib}"
 rm -rf ./raw/lib
-#rm ./renpy_clear/*.txt
-rm -rf ./renpy_clear/game
-#mv ./renpy_clear/ ./raw/
+mkdir -p ./raw/lib
+rsync -a \
+    --exclude 'test' --exclude 'tests' --exclude '__pycache__' \
+    --exclude 'idlelib' --exclude 'tkinter' --exclude 'turtledemo' \
+    --exclude 'lib2to3' --exclude 'ensurepip' --exclude 'site-packages' \
+    "$FULLLIB"/ ./raw/lib/                            # full 3.13 stdlib (.py)
+cp -r ./renpy_clear/renpy ./raw/lib/renpy            # Ren'Py python package
+rm -rf ./raw/lib/renpy/common                         # common ships unpacked in Contents/renpy
+# Third-party pure-Python deps Ren'Py needs (e.g. ecdsa for renpy.savetoken). The SDK
+# ships these only as 3.12 .pyc, which our 3.13 interpreter can't load, so fetch the
+# SOURCE with pip (--no-compile keeps it .py; pulls in six etc.).
+python3 -m pip install --target ./raw/lib --no-compile --upgrade ecdsa || \
+    pip3 install --target ./raw/lib --no-compile --upgrade ecdsa
+rm -rf ./raw/lib/*.dist-info ./raw/lib/bin             # strip pip metadata/scripts
+# Pre-compile .py -> .pyc (sourceless) so the device loads bytecode without re-parsing
+# every module each boot. Any 3.13.x emits magic-compatible .pyc for the device 3.13.14.
+# Delete a .py only once its .pyc exists (failed compiles keep their source).
+python3.13 -m compileall -b -q -j0 ./raw/lib || true
+find ./raw/lib -name '*.py' | while read -r f; do [ -f "${f%.py}.pyc" ] && rm -f "$f"; done
+# STORED (no compression) so zipimport needs no zlib during interpreter init.
+( cd ./raw/lib && 7z a -tzip -mx0 ../switch/romfs/Contents/lib.zip ./* >/dev/null )
+rm -rf ./raw/lib
+
+echo "== packaged homebrew layout (raw/switch) =="
+find ./raw/switch -maxdepth 3 | sort
+
+# --- Bundle a homebrew NRO (embeds romfs) for hbmenu / Ryujinx ---
+TITLE="${TITLE:-The Question}"
+AUTHOR="${AUTHOR:-RenpySwitch}"
+ICON="${ICON:-../PyNX_python3.13.0_horizonOS_switch/icon.jpg}"
+$DEVKITPRO/tools/bin/nacptool --create "$TITLE" "$AUTHOR" "8.5.3" ./raw/app.nacp
+NRO_ICON=""; [ -f "$ICON" ] && NRO_ICON="--icon=$ICON"
+$DEVKITPRO/tools/bin/elf2nro ./build/renpy-switch.elf ./raw/the_question.nro \
+    --nacp=./raw/app.nacp $NRO_ICON --romfsdir=./raw/switch/romfs
+echo "== built ./raw/the_question.nro =="
+ls -la ./raw/the_question.nro

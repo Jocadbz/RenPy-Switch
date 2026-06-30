@@ -33,6 +33,8 @@ endif()
 add_compile_definitions(
     __SWITCH__
     Py_NO_ENABLE_SHARED
+    _GNU_SOURCE
+    SSIZE_MAX=__LONG_MAX__
 )
 
 
@@ -59,7 +61,7 @@ set(OPT_FLAGS
 # Include paths
 # ------------------------------------------------------------------------------
 set(INCLUDES
-    ${DEVKITPRO}/portlibs/switch/include/python3.9
+    ${DEVKITPRO}/portlibs/switch/include/python3.13
     ${DEVKITPRO}/portlibs/switch/include/fribidi
     include
     include/module
@@ -69,10 +71,10 @@ set(INCLUDES
     include/module/pygame_sdl2/src
 	# Добавьте эти пути:
     ${DEVKITPRO}/portlibs/switch/include
-    /usr/include/python3.9
-    /usr/local/include/python3.9
+    /usr/include/python3.13
+    /usr/local/include/python3.13
     # Путь к сгенерированным заголовочным файлам pygame_sdl2
-    ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/build/lib.linux-x86_64-3.9/pygame_sdl2
+    ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/build/lib.linux-x86_64-3.13/pygame_sdl2
     ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/src
 	${DEVKITPRO}/portlibs/switch/include
 	${CMAKE_SOURCE_DIR}/source
@@ -265,13 +267,39 @@ endif()
 # ------------------------------------------------------------------------------
 # Executable
 # ------------------------------------------------------------------------------
+# 8.5.3: glob the gathered sources (overrides the stale hardcoded SOURCES list above).
+file(GLOB SOURCES
+    ${CMAKE_SOURCE_DIR}/source/main.c
+    ${CMAKE_SOURCE_DIR}/source/video_player.c
+    ${CMAKE_SOURCE_DIR}/source/module/*.c
+    ${CMAKE_SOURCE_DIR}/source/module/*.cc
+)
+
 add_executable(renpy-switch
-    #source/main.c
     ${SOURCES}
 )
 
 set_target_properties(renpy-switch PROPERTIES
     LINKER_LANGUAGE CXX
+)
+
+# 8.5.3 layout: flat include/module + libhydrogen subdirs + portlibs headers.
+list(APPEND INCLUDES
+    ${DEVKITPRO}/portlibs/switch/include/harfbuzz
+    ${DEVKITPRO}/portlibs/switch/include/freetype2
+    ${DEVKITPRO}/portlibs/switch/include/SDL2
+    include/module/libhydrogen
+    include/module/libhydrogen/impl
+    include/module/libhydrogen/impl/random
+    source/module
+    # original 8.5.3 source trees, so path-qualified includes ("pygame/x.h",
+    # "renpy/x.h", cython *_api.h) resolve against the real structure
+    ${CMAKE_SOURCE_DIR}/renpy-source/src
+    ${CMAKE_SOURCE_DIR}/renpy-source/src/libhydrogen
+    ${CMAKE_SOURCE_DIR}/renpy-source/src/libhydrogen/impl
+    ${CMAKE_SOURCE_DIR}/renpy-source/src/libhydrogen/impl/random
+    ${CMAKE_SOURCE_DIR}/renpy-source
+    ${CMAKE_SOURCE_DIR}/renpy-source/tmp/gen3-static
 )
 
 target_include_directories(renpy-switch PRIVATE ${INCLUDES})
@@ -284,7 +312,7 @@ target_compile_options(renpy-switch PRIVATE
 
 
 target_link_libraries(renpy-switch
-    ${DEVKITPRO}/portlibs/switch/lib/libpython3.9.a
+    ${DEVKITPRO}/portlibs/switch/lib/libpython3.13.a
     ${DEVKITPRO}/portlibs/switch/lib/libfribidi.a
     m
     z
