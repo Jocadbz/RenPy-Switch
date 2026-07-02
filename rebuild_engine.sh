@@ -14,7 +14,7 @@ JOBS="${JOBS:-$(nproc)}"
 
 echo "==> [1/3] Cythonizing changed .pyx -> renpy-source/tmp/gen3-static/*.c"
 ( cd renpy-source && RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local \
-    RENPY_STATIC=1 python3.13 setup.py build_ext --inplace -j"$JOBS" || true )
+    RENPY_STATIC=1 RENPY_NO_ASSIMP=1 python3.13 setup.py build_ext --inplace -j"$JOBS" || true )
 
 echo "==> [2/3] Gathering generated C + syncing hand-written sources"
 cp renpy-source/tmp/gen3-static/*.c source/module/ 2>/dev/null || true

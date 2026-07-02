@@ -16,7 +16,7 @@ mkdir -p source/module include/module
 # build_ext may fail to LINK against host libs, but it still generates the .c we need.
 echo "Cythonizing Ren'Py 8.5.3..."
 pushd renpy-source
-RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local RENPY_STATIC=1 python3.13 setup.py build_ext --inplace -j"$(nproc)" || true
+RENPY_DEPS_INSTALL=/usr/lib/x86_64-linux-gnu:/usr:/usr/local RENPY_STATIC=1 RENPY_NO_ASSIMP=1 python3.13 setup.py build_ext --inplace -j"$(nproc)" || true
 popd
 
 
