@@ -1057,6 +1057,32 @@ int main(int argc, char* argv[])
     setenv("vblank_mode", "0", 1);
     setenv("RENPY_GL_VSYNC", "0", 1);
 
+    /* Game-archive selection bridge. If sdmc:/renpy/game.txt exists, its three
+       lines name a .zip/.apk to run on the fly instead of an embedded game:
+           line 1: archive path      e.g.  sdmc:/renpy/MyGame.zip
+           line 2: kind              "apk" (x- prefixed) or "zip" (plain names)
+           line 3: root prefix       e.g.  assets/x-game/   or   MyGame-1.0-pc/game/
+       renpy.loader.find_switch_archive() reads these env vars and mounts the game.
+       (The Stage-2 SDL picker writes this file; it can also be written by hand.)
+       Missing file -> normal embedded-game boot. */
+    {
+        FILE *sel = fopen("sdmc:/renpy/game.txt", "r");
+        if (sel) {
+            static const char *keys[3] = {
+                "RENPY_SWITCH_GAME_ARCHIVE", "RENPY_SWITCH_GAME_KIND", "RENPY_SWITCH_GAME_ROOT" };
+            char line[600];
+            for (int i = 0; i < 3 && fgets(line, sizeof line, sel); i++) {
+                line[strcspn(line, "\r\n")] = '\0';
+                if (line[0]) {
+                    setenv(keys[i], line, 1);
+                    printf("[switch] %s=%s\n", keys[i], line);
+                }
+            }
+            fclose(sel);
+            fflush(stdout);
+        }
+    }
+
     appletLockExit();
     appletHook(&applet_hook_cookie, on_applet_hook, NULL);
 

@@ -57,7 +57,10 @@ rm -rf build
 mkdir build
 pushd build
 cmake ..
-make -j"$(nproc)" || true
+# A full parallel build of the heavy C++/Cython units can exhaust RAM under high -j;
+# the killed compiler leaves no .nso and no "error:" line. If the parallel build
+# fails, retry serially (low memory) to finish the remaining objects + link.
+make -j"$(nproc)" || { echo "== parallel make failed (likely OOM) — retrying serially =="; make; } || true
 echo "===== PyInit symbols ====="
 nm CMakeFiles/renpy-switch.dir/source/module/*.o | grep PyInit || true
 echo "===== PyInit symbols ====="
@@ -185,9 +188,20 @@ find ./raw/switch -maxdepth 3 | sort
 
 # --- Bundle a homebrew NRO (embeds romfs) for hbmenu / Ryujinx ---
 if [ "$SKIP_GAME" = 1 ]; then
-    echo "SKIP_GAME=1: skipping the the_question.nro demo build."
-    echo "Engine ready: build/renpy-switch.elf + raw/switch/romfs/Contents/{renpy,renpy.py,lib.zip}."
-    echo "Wrap a game with:  bash package_game.sh <game-dir>"
+    # Loader NRO: engine + runtime, NO embedded game. It runs whatever archive is
+    # named in sdmc:/renpy/game.txt (see the selection bridge in main.c), reading the
+    # game's files on the fly. build/renpy-switch.elf + the romfs engine pieces are
+    # reused; only game/ is absent.
+    echo "SKIP_GAME=1: building loader NRO (no embedded game)."
+    LOADER_TITLE="${TITLE:-RenPy Loader}"
+    LOADER_AUTHOR="${AUTHOR:-RenpySwitch}"
+    LOADER_ICON="${ICON:-../PyNX_python3.13.0_horizonOS_switch/icon.jpg}"
+    $DEVKITPRO/tools/bin/nacptool --create "$LOADER_TITLE" "$LOADER_AUTHOR" "8.5.3" ./raw/app.nacp
+    LOADER_NRO_ICON=""; [ -f "$LOADER_ICON" ] && LOADER_NRO_ICON="--icon=$LOADER_ICON"
+    $DEVKITPRO/tools/bin/elf2nro ./build/renpy-switch.elf ./raw/loader.nro \
+        --nacp=./raw/app.nacp $LOADER_NRO_ICON --romfsdir=./raw/switch/romfs
+    echo "== built ./raw/loader.nro =="
+    ls -la ./raw/loader.nro
 else
     TITLE="${TITLE:-The Question}"
     AUTHOR="${AUTHOR:-RenpySwitch}"

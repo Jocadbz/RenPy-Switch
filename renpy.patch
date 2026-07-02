@@ -375,8 +375,144 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              renpy.game.interface.display_reset = True
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/loader.py renpy-source/renpy/loader.py
 --- .renpy-pristine/renpy/loader.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/loader.py	2026-06-30 17:05:17.191966200 +0100
-@@ -441,7 +441,7 @@
++++ renpy-source/renpy/loader.py	2026-07-02 16:50:08.436477800 +0100
+@@ -32,6 +32,8 @@
+ import unicodedata
+ import time
+ import pathlib
++import zipfile
++import struct
+ 
+ from renpy.pygame.rwobject import RWopsIO
+ 
+@@ -104,6 +106,107 @@
+         split_apks.append(apks[-1])
+ 
+ 
++class SwitchZipAPK(object):
++    """
++    Switch: a stand-in for android.apk.APK that reads a Ren'Py game out of a .zip
++    or .apk sitting on the SD card, so the loader can serve the game's files on the
++    fly (no extraction).
++
++    `prefix` is the path inside the archive to the game root, e.g. "assets/x-game/"
++    for an Android build or "MyGame-1.0-pc/game/" for a desktop zip. Names returned
++    by list() and passed to open() are relative to that prefix (so they still carry
++    the per-component "x-" for an .apk, which the loader strips/adds as needed).
++    """
++
++    def __init__(self, path, prefix=""):
++        self.path = path
++        self.prefix = prefix
++        self.zf = zipfile.ZipFile(path, "r")
++
++        # archive-relative name (prefix stripped) -> ZipInfo
++        self.entries = {}
++        plen = len(prefix)
++        for zi in self.zf.infolist():
++            name = zi.filename
++            if name.endswith("/"):
++                continue
++            if prefix and not name.startswith(prefix):
++                continue
++            self.entries[name[plen:]] = zi
++
++    def list(self):
++        return list(self.entries)
++
++    def _data_offset(self, zi):
++        # The data starts after the LOCAL file header, whose name/extra lengths can
++        # differ from the central directory's, so read the local header to be exact.
++        with open(self.path, "rb") as f:
++            f.seek(zi.header_offset)
++            hdr = f.read(30)
++        name_len = struct.unpack("<H", hdr[26:28])[0]
++        extra_len = struct.unpack("<H", hdr[28:30])[0]
++        return zi.header_offset + 30 + name_len + extra_len
++
++    def open(self, name):
++        zi = self.entries.get(name)
++        if zi is None:
++            raise IOError("not in archive: " + name)
++
++        if zi.compress_type == zipfile.ZIP_STORED:
++            # Uncompressed (the case for Android .apk assets): hand back a seekable
++            # window straight into the archive file — no decompression, low memory,
++            # the same trick Ren'Py uses to read .rpa archives.
++            off = self._data_offset(zi)
++            return io.BufferedReader(RWopsIO(self.path, "rb", base=off, length=zi.file_size))
++
++        # Compressed (typical desktop .zip): decompress the whole entry into memory,
++        # which is seekable. (Larger files pay a RAM cost here; see the loose-file
++        # v1 note. Repacking a game's zip as "stored" avoids it.)
++        data = self.zf.read(zi)
++        return io.BufferedReader(RWopsIO.from_buffer(data, name=name))
++
++
++def find_switch_archive():
++    """
++    Switch: if RENPY_SWITCH_GAME_ARCHIVE points at a .zip/.apk, mount its game
++    directory as an apk-like source so the loader reads the game on the fly. The
++    picker (or a manual export) sets:
++
++      RENPY_SWITCH_GAME_ARCHIVE  absolute path, e.g. sdmc:/renpy/MyGame.zip
++      RENPY_SWITCH_GAME_KIND     "apk" (x- prefixed) or "zip" (plain names)
++      RENPY_SWITCH_GAME_ROOT     prefix inside the archive to the game root, e.g.
++                                 "assets/x-game/" or "MyGame-1.0-pc/game/"
++    """
++
++    if apks:
++        return
++
++    path = os.environ.get("RENPY_SWITCH_GAME_ARCHIVE")
++    if not path:
++        return
++
++    kind = os.environ.get("RENPY_SWITCH_GAME_KIND", "zip")
++    root = os.environ.get("RENPY_SWITCH_GAME_ROOT", "")
++
++    try:
++        apk = SwitchZipAPK(path, prefix=root)
++    except Exception:
++        renpy.display.log.exception()
++        return
++
++    apks.append(apk)
++    game_apks.append(apk)
++
++    # An .apk build x-prefixes every path component, so leave it OUT of split_apks
++    # to have the loader apply/strip the "x-". A desktop .zip stores real names, so
++    # put it IN split_apks to skip the "x-" handling.
++    if kind != "apk":
++        split_apks.append(apk)
++
++    print("[switch] mounted game archive %r (kind=%s, root=%r, %d files)" % (
++        path, kind, root, len(apk.entries)))
++
++
+ # Files on disk should be checked before archives. Otherwise, among
+ # other things, using a new version of bytecode.rpyb will break.
+ archives = []
+@@ -249,6 +352,9 @@
+     if renpy.android:
+         find_apks()
+ 
++    if renpy.switch:
++        find_switch_archive()
++
+     for _dir, fn in listdirfiles():
+         lower_map[unicodedata.normalize("NFC", fn.lower())] = fn
+ 
+@@ -394,7 +500,7 @@
+             add(None, f, files, seen)
+ 
+ 
+-if renpy.android:
++if renpy.android or renpy.switch:
+     scandirfiles_callbacks.append(scandirfiles_from_apk)
+ 
+ 
+@@ -441,7 +547,7 @@
          else:
              files = game_files
  
@@ -385,7 +521,16 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
          for j in walkdir(i):
              # Use rpartition as much faster than pathlib and splitext.
-@@ -773,7 +773,7 @@
+@@ -632,7 +738,7 @@
+     return None
+ 
+ 
+-if renpy.android:
++if renpy.android or renpy.switch:
+     file_open_callbacks.append(load_from_apk)
+ 
+ 
+@@ -773,7 +879,7 @@
      path = lower_map.get(unicodedata.normalize("NFC", path.lower()), path)
  
      for d in renpy.config.searchpath:
@@ -664,6 +809,35 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      if renpy.android:
          return os.environ['ANDROID_PUBLIC']
  
+diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/setup.py renpy-source/setup.py
+--- .renpy-pristine/setup.py	2026-05-15 13:54:08.000000000 +0100
++++ renpy-source/setup.py	2026-07-02 15:04:59.354015100 +0100
+@@ -82,8 +82,13 @@
+     if cubism:
+         setuplib.include_dirs.append("{}/Core/include".format(cubism))
+ 
+-    pkgconfig_packages = "assimp\n" + pkgconfig_packages
+-    library("assimp")
++    # Switch: assimp (3D model loader) is not built or shipped — there's no libassimp
++    # for the target and the module is stripped from the CMake build. RENPY_NO_ASSIMP
++    # skips adding -lassimp to the global link list; otherwise every host cythonize
++    # link fails with "cannot find -lassimp" (harmless but very noisy).
++    if not os.environ.get("RENPY_NO_ASSIMP"):
++        pkgconfig_packages = "assimp\n" + pkgconfig_packages
++        library("assimp")
+ 
+     # src/ directory.
+     cython("_renpy", [ "src/IMG_savepng.c", "src/core.c" ])
+@@ -134,7 +139,8 @@
+     if cubism:
+         cython("renpy.gl2.live2dmodel", [ "src/live2dcsm.c" ])
+ 
+-    cython("renpy.gl2.assimp", [ "src/assimpio.cc" ], language="c++")
++    if not os.environ.get("RENPY_NO_ASSIMP"):
++        cython("renpy.gl2.assimp", [ "src/assimpio.cc" ], language="c++")
+ 
+     # renpy.text
+     cython("renpy.text.textsupport")
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/random/switch_enc.h renpy-source/src/libhydrogen/impl/random/switch_enc.h
 --- .renpy-pristine/src/libhydrogen/impl/random/switch_enc.h	1970-01-01 01:00:00.000000000 +0100
 +++ renpy-source/src/libhydrogen/impl/random/switch_enc.h	2026-06-30 18:03:37.304939800 +0100
