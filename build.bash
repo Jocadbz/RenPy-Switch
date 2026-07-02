@@ -74,6 +74,15 @@ mv ./build/renpy-switch.nso ./raw/switch/exefs/main
 # GAME_DIR: a Ren'Py project's game/ dir to embed (default: the bundled the_question demo).
 GAME_DIR="${GAME_DIR:-renpy-source/the_question/game}"
 
+# SKIP_GAME=1 -> build only the reusable engine (build/renpy-switch.elf + the romfs
+# engine pieces renpy/, renpy.py, lib.zip) without embedding a playable game or
+# producing the the_question.nro demo. Wrap real games afterwards with package_game.sh.
+# NOTE: the demo game is still COMPILED internally below even when SKIP_GAME=1 —
+# that same compile generates the renpy/common .rpyc that every package_game.sh output
+# reuses, and the device romfs is read-only so common cannot be compiled there. Only
+# the shipping of the game (into the romfs) and the demo NRO are skipped.
+SKIP_GAME="${SKIP_GAME:-0}"
+
 rm -rf renpy_clear
 mkdir -p renpy_clear/game
 cp ./renpy_sdk/*/renpy.sh ./renpy_clear/renpy.sh
@@ -99,7 +108,11 @@ cp -r ./renpy_clear/renpy/common ./raw/switch/romfs/Contents/renpy/
 # font searchpath) so load_face() can find them.
 cp ./renpy-source/sdk-fonts/*.ttf ./raw/switch/romfs/Contents/renpy/common/ 2>/dev/null || true
 cp ./renpy_clear/renpy.py ./raw/switch/romfs/Contents/
-cp -r ./renpy_clear/game ./raw/switch/romfs/Contents/game
+if [ "$SKIP_GAME" = 1 ]; then
+    echo "SKIP_GAME=1: not embedding a game into the romfs (engine-only build)."
+else
+    cp -r ./renpy_clear/game ./raw/switch/romfs/Contents/game
+fi
 # Optional boot splash shown by main.c during init — drop art at sources/splash.png.
 [ -f sources/splash.png ] && cp sources/splash.png ./raw/switch/romfs/Contents/splash.png || true
 
@@ -122,6 +135,42 @@ rm -rf ./raw/lib/renpy/common                         # common ships unpacked in
 python3 -m pip install --target ./raw/lib --no-compile --upgrade ecdsa || \
     pip3 install --target ./raw/lib --no-compile --upgrade ecdsa
 rm -rf ./raw/lib/*.dist-info ./raw/lib/bin             # strip pip metadata/scripts
+# Switch: _socket has no gethostname() (no hostname concept), so games doing
+# `from socket import gethostname` crash. Append a guarded stub to socket.py.
+if [ -f ./raw/lib/socket.py ] && ! grep -q RENPY_SWITCH_GETHOSTNAME ./raw/lib/socket.py; then
+cat >> ./raw/lib/socket.py <<'PYEOF'
+
+# RENPY_SWITCH_GETHOSTNAME: Horizon _socket omits gethostname(); provide a stub.
+try:
+    gethostname
+except NameError:
+    def gethostname():
+        return "switch"
+PYEOF
+fi
+# Switch runs Python 3.13, where random.randrange() rejects non-integer (float) args;
+# many older Ren'Py games pass floats. Append a leniency shim to random.py (idempotent).
+if [ -f ./raw/lib/random.py ] && ! grep -q RENPY_SWITCH_RANDRANGE ./raw/lib/random.py; then
+cat >> ./raw/lib/random.py <<'PYEOF'
+
+# RENPY_SWITCH_RANDRANGE: coerce non-integer randrange() args to int (pre-3.11 behaviour).
+try:
+    _rr_orig_switch = Random.randrange
+    def _rr_switch(self, start, stop=None, step=_ONE, _orig=_rr_orig_switch):
+        if not isinstance(start, int):
+            start = int(start)
+        if stop is not None and not isinstance(stop, int):
+            stop = int(stop)
+        if step is not _ONE and not isinstance(step, int):
+            step = int(step)
+        return _orig(self, start, stop, step)
+    Random.randrange = _rr_switch
+    randrange = _inst.randrange
+    randint = _inst.randint
+except Exception:
+    pass
+PYEOF
+fi
 # Pre-compile .py -> .pyc (sourceless) so the device loads bytecode without re-parsing
 # every module each boot. Any 3.13.x emits magic-compatible .pyc for the device 3.13.14.
 # Delete a .py only once its .pyc exists (failed compiles keep their source).
@@ -135,12 +184,18 @@ echo "== packaged homebrew layout (raw/switch) =="
 find ./raw/switch -maxdepth 3 | sort
 
 # --- Bundle a homebrew NRO (embeds romfs) for hbmenu / Ryujinx ---
-TITLE="${TITLE:-The Question}"
-AUTHOR="${AUTHOR:-RenpySwitch}"
-ICON="${ICON:-../PyNX_python3.13.0_horizonOS_switch/icon.jpg}"
-$DEVKITPRO/tools/bin/nacptool --create "$TITLE" "$AUTHOR" "8.5.3" ./raw/app.nacp
-NRO_ICON=""; [ -f "$ICON" ] && NRO_ICON="--icon=$ICON"
-$DEVKITPRO/tools/bin/elf2nro ./build/renpy-switch.elf ./raw/the_question.nro \
-    --nacp=./raw/app.nacp $NRO_ICON --romfsdir=./raw/switch/romfs
-echo "== built ./raw/the_question.nro =="
-ls -la ./raw/the_question.nro
+if [ "$SKIP_GAME" = 1 ]; then
+    echo "SKIP_GAME=1: skipping the the_question.nro demo build."
+    echo "Engine ready: build/renpy-switch.elf + raw/switch/romfs/Contents/{renpy,renpy.py,lib.zip}."
+    echo "Wrap a game with:  bash package_game.sh <game-dir>"
+else
+    TITLE="${TITLE:-The Question}"
+    AUTHOR="${AUTHOR:-RenpySwitch}"
+    ICON="${ICON:-../PyNX_python3.13.0_horizonOS_switch/icon.jpg}"
+    $DEVKITPRO/tools/bin/nacptool --create "$TITLE" "$AUTHOR" "8.5.3" ./raw/app.nacp
+    NRO_ICON=""; [ -f "$ICON" ] && NRO_ICON="--icon=$ICON"
+    $DEVKITPRO/tools/bin/elf2nro ./build/renpy-switch.elf ./raw/the_question.nro \
+        --nacp=./raw/app.nacp $NRO_ICON --romfsdir=./raw/switch/romfs
+    echo "== built ./raw/the_question.nro =="
+    ls -la ./raw/the_question.nro
+fi

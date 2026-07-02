@@ -25,3 +25,4 @@ __pycache__/
 
 # ---- scratch / personal ----
 do_build.sh
+.renpy-pristine/

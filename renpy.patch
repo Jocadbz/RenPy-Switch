@@ -1,6 +1,6 @@
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/__init__.py renpy-source/renpy/__init__.py
 --- .renpy-pristine/renpy/__init__.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/__init__.py	2026-06-30 16:36:29.272977700 +0100
++++ renpy-source/renpy/__init__.py	2026-06-30 17:05:17.151429100 +0100
 @@ -157,6 +157,7 @@
  android: bool = False
  ios: bool = False
@@ -56,7 +56,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/bootstrap.py renpy-source/renpy/bootstrap.py
 --- .renpy-pristine/renpy/bootstrap.py	2026-04-21 03:28:05.000000000 +0100
-+++ renpy-source/renpy/bootstrap.py	2026-06-30 16:36:29.280020400 +0100
++++ renpy-source/renpy/bootstrap.py	2026-07-01 22:51:46.247101100 +0100
 @@ -334,10 +334,19 @@
      gamedir = renpy.__main__.path_to_gamedir(basedir, name)
  
@@ -81,7 +81,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      try:
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/config.py renpy-source/renpy/config.py
 --- .renpy-pristine/renpy/config.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/config.py	2026-06-30 16:36:29.285066100 +0100
++++ renpy-source/renpy/config.py	2026-06-30 17:05:17.164561300 +0100
 @@ -322,7 +322,7 @@
  all_character_callbacks = []
  
@@ -113,9 +113,177 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
  # Should Ren'Py quit on mobile background?
  quit_on_mobile_background = False
+diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/display/behavior.py renpy-source/renpy/display/behavior.py
+--- .renpy-pristine/renpy/display/behavior.py	2026-05-15 13:54:09.000000000 +0100
++++ renpy-source/renpy/display/behavior.py	2026-07-01 14:37:38.828498400 +0100
+@@ -1659,7 +1659,15 @@
+             renpy.display.render.redraw(self, 0)
+             raise renpy.display.core.IgnoreEvent()
+ 
+-        elif map_event(ev, "input_enter"):
++        elif map_event(ev, "input_enter") or (
++                # Switch: there's no physical Enter key. Let the gamepad confirm/advance
++                # button (pad A / the Nintendo "B" button, delivered as a named EVENTNAME
++                # that carries "button_select") finalize the field, so the player can close
++                # the on-screen keyboard and press it to continue. Gated to EVENTNAME so a
++                # *tap on the field itself* still just opens the keyboard, not submits.
++                renpy.switch
++                and ev.type == renpy.display.core.EVENTNAME
++                and map_event(ev, "button_select")):
+             content = self.content
+ 
+             if self.edit_text:
+diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/display/core.py renpy-source/renpy/display/core.py
+--- .renpy-pristine/renpy/display/core.py	2026-05-15 13:54:09.000000000 +0100
++++ renpy-source/renpy/display/core.py	2026-07-01 14:50:58.007317100 +0100
+@@ -2074,7 +2074,12 @@
+ 
+                 pygame.key.set_text_input_rect(rect)
+ 
+-            if not self.old_text_rect or not_shown:
++            # On Switch the on-screen keyboard is a modal applet: show it once when
++            # the focused text field first appears, but NEVER re-arm it just because
++            # it's "not shown" — that reopened it every frame and made it impossible
++            # to close. After the user closes the keyboard the typed text stays in the
++            # field, and the game's own advance (B / tap) finalizes the input.
++            if not self.old_text_rect or (not_shown and not renpy.switch):
+                 pygame.key.start_text_input()
+ 
+                 if self.touch_keyboard:
+@@ -2149,6 +2154,15 @@
+ 
+             self.interaction_counter = 0
+ 
++            # Switch: the on-screen keyboard is shown once per interaction that has a
++            # focused text field (see update_text_rect). old_text_rect persists across
++            # interactions, so a SECOND renpy.input() would find it still holding the
++            # first field's rect and never re-arm the keyboard. Clear it here — once
++            # per new interaction, before the restart-interaction loop below, so it
++            # does NOT reintroduce the per-frame reopen loop within a single prompt.
++            if renpy.switch:
++                self.old_text_rect = None
++
+             repeat = True
+             rv = None
+ 
+diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/display/presplash.py renpy-source/renpy/display/presplash.py
+--- .renpy-pristine/renpy/display/presplash.py	2026-05-15 13:54:09.000000000 +0100
++++ renpy-source/renpy/display/presplash.py	2026-07-02 14:40:59.557744900 +0100
+@@ -88,6 +88,21 @@
+     if "RENPY_LESS_UPDATES" in os.environ:
+         return
+ 
++    if renpy.switch:
++        # Switch: the software-surface window path below can't draw to the GL-only
++        # window. Render our bundled splash + a progress bar via an SDL_Renderer in
++        # the _switch_splash C module instead. The window is torn down in end(),
++        # before Ren'Py creates its GL window (single nwindow).
++        global window, progress_bar
++        try:
++            import _switch_splash
++            if _switch_splash.start():
++                window = _switch_splash
++                progress_bar = _switch_splash
++        except Exception:
++            renpy.display.log.exception()
++        return
++
+     foreground_fn = find_file("presplash_foreground", root=gamedir)
+     background_fn = find_file("presplash_background", root=gamedir)
+ 
+@@ -104,16 +119,12 @@
+ 
+     pygame.display.init()
+ 
+-    global progress_bar
+-
+     if foreground_fn and background_fn:
+         presplash = ProgressBar(foreground_fn, background_fn)  # type: ignore
+         progress_bar = presplash
+     else:
+         presplash = pygame.image.load(presplash_fn)
+ 
+-    global window
+-
+     bounds = pygame.display.get_display_bounds(0)
+ 
+     sw, sh = presplash.get_size()
+@@ -150,6 +161,12 @@
+ pump_clock = 21
+ pump_total = 0
+ 
++# Switch: pump_count at the moment pump_total first becomes known. The determinate
++# progress fraction is measured from here, so the bar starts at 0 when it switches
++# from the indeterminate slider instead of jumping to whatever ratio the pre-script
++# pumps happened to accumulate (which varied run-to-run — a "sporadic" first value).
++pump_base = 0
++
+ 
+ def pump_window():
+     global last_pump_time
+@@ -168,6 +185,28 @@
+ 
+     last_pump_time = time.time()
+ 
++    if renpy.switch:
++        # Draw the splash + progress bar in the C module. Use the real load fraction
++        # once we know the script-file total; until then pass <0 for an indeterminate
++        # (sliding) bar. window is the _switch_splash module here.
++        global pump_base
++        frac = -1.0
++        if not pump_total:
++            if renpy.game.script:
++                pump_total = (len(renpy.game.script.common_script_files) + len(renpy.game.script.script_files)) + pump_clock
++                # Measure determinate progress from now, so the bar starts at 0
++                # rather than jumping to the accumulated pre-script pump count.
++                pump_base = pump_count
++        if pump_total:
++            frac = (pump_count - pump_base) / pump_total
++            if frac < 0.0:
++                frac = 0.0
++        try:
++            window.pump(frac)
++        except Exception:
++            renpy.display.log.exception()
++        return
++
+     for ev in pygame.event.get():
+         if ev.type == pygame.QUIT:
+             raise renpy.game.QuitException(relaunch=False, status=0)
+@@ -196,6 +235,7 @@
+ 
+     global window
+     global done
++    global progress_bar
+ 
+     done = True
+ 
+@@ -205,11 +245,21 @@
+     if window is None:
+         return
+ 
++    if renpy.switch:
++        # Tear down the SDL_Renderer splash window NOW, before Ren'Py creates its GL
++        # window — the single nwindow can't hold both at once.
++        try:
++            window.end()
++        except Exception:
++            renpy.display.log.exception()
++        window = None
++        progress_bar = None
++        return
++
+     window.destroy()
+     window = None
+ 
+     # Remove references to presplash images
+-    global progress_bar
+     progress_bar = None
+ 
+     pygame.display.quit()
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/error.py renpy-source/renpy/error.py
 --- .renpy-pristine/renpy/error.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/error.py	2026-06-30 16:36:29.291330500 +0100
++++ renpy-source/renpy/error.py	2026-06-30 17:05:17.171548400 +0100
 @@ -1712,6 +1712,16 @@
      te.simple = simple.getvalue()
      te.full = full.getvalue()
@@ -135,7 +303,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
          f, te.traceback_fn = open_error_file("traceback.txt", "w")
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/gl2/assimp.py renpy-source/renpy/gl2/assimp.py
 --- .renpy-pristine/renpy/gl2/assimp.py	1970-01-01 01:00:00.000000000 +0100
-+++ renpy-source/renpy/gl2/assimp.py	2026-06-30 16:36:29.295347300 +0100
++++ renpy-source/renpy/gl2/assimp.py	2026-06-30 17:05:17.176885800 +0100
 @@ -0,0 +1,40 @@
 +# Switch port stub for renpy.gl2.assimp.
 +#
@@ -179,7 +347,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 +        )
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/gl2/gl2draw.pyx renpy-source/renpy/gl2/gl2draw.pyx
 --- .renpy-pristine/renpy/gl2/gl2draw.pyx	2026-05-03 02:45:34.000000000 +0100
-+++ renpy-source/renpy/gl2/gl2draw.pyx	2026-06-30 16:36:29.299369600 +0100
++++ renpy-source/renpy/gl2/gl2draw.pyx	2026-06-30 17:05:17.183907400 +0100
 @@ -373,7 +373,10 @@
  
          pwidth, pheight = self.select_physical_size(physical_size)
@@ -207,7 +375,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              renpy.game.interface.display_reset = True
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/loader.py renpy-source/renpy/loader.py
 --- .renpy-pristine/renpy/loader.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/loader.py	2026-06-30 16:36:29.305418300 +0100
++++ renpy-source/renpy/loader.py	2026-06-30 17:05:17.191966200 +0100
 @@ -441,7 +441,7 @@
          else:
              files = game_files
@@ -228,7 +396,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              return fn
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/loadsave.py renpy-source/renpy/loadsave.py
 --- .renpy-pristine/renpy/loadsave.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/loadsave.py	2026-06-30 16:36:29.310976300 +0100
++++ renpy-source/renpy/loadsave.py	2026-07-01 15:21:44.041729200 +0100
 @@ -370,7 +370,7 @@
  
      autosave_not_running.clear()
@@ -238,9 +406,24 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
          autosave_thread = threading.Thread(target=autosave_thread_function, args=(take_screenshot,))
          autosave_thread.daemon = True
          autosave_thread.start()
+@@ -605,7 +605,13 @@
+ 
+     c = get_cache(filename)
+ 
+-    if c.get_mtime():
++    # A slot with an epoch-0 mtime (0.0) still EXISTS and must be loadable. This
++    # happens on platforms whose save filesystem doesn't record real timestamps
++    # (e.g. the Switch save FS when the time service isn't up) — the file is there,
++    # its mtime is just 0. Missing slots return None, so distinguish present (not
++    # None, includes 0.0) from empty (None) instead of gating on a truthy mtime,
++    # which previously made every Switch load slot insensitive.
++    if c.get_mtime() is not None:
+         return True
+     else:
+         return False
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/log.py renpy-source/renpy/log.py
 --- .renpy-pristine/renpy/log.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/log.py	2026-06-30 16:36:29.317038900 +0100
++++ renpy-source/renpy/log.py	2026-06-30 17:05:17.208196200 +0100
 @@ -90,6 +90,13 @@
          if self.file is False:
              return False
@@ -257,7 +440,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/main.py renpy-source/renpy/main.py
 --- .renpy-pristine/renpy/main.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/main.py	2026-06-30 16:36:29.323056100 +0100
++++ renpy-source/renpy/main.py	2026-06-30 17:05:17.212337200 +0100
 @@ -349,6 +349,11 @@
      renpy.config.commondir = renpy.__main__.path_to_common(renpy.config.renpy_base)  # E1101 @UndefinedVariable
      renpy.config.searchpath = renpy.__main__.predefined_searchpath(renpy.config.commondir)  # E1101 @UndefinedVariable
@@ -272,7 +455,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/persistent.py renpy-source/renpy/persistent.py
 --- .renpy-pristine/renpy/persistent.py	2026-03-21 02:53:28.000000000 +0000
-+++ renpy-source/renpy/persistent.py	2026-06-30 16:36:29.329097600 +0100
++++ renpy-source/renpy/persistent.py	2026-06-30 17:05:17.220413300 +0100
 @@ -600,6 +600,9 @@
          # This is better than not working at all.
          files = [renpy.config.savedir]
@@ -285,7 +468,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/preferences.py renpy-source/renpy/preferences.py
 --- .renpy-pristine/renpy/preferences.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/preferences.py	2026-06-30 16:36:29.333355400 +0100
++++ renpy-source/renpy/preferences.py	2026-06-30 17:05:17.225808700 +0100
 @@ -107,7 +107,7 @@
          all_preferences.append(self)
  
@@ -306,7 +489,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  Preference("video_image_fallback", False)
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/pygame/display.pyx renpy-source/renpy/pygame/display.pyx
 --- .renpy-pristine/renpy/pygame/display.pyx	2026-03-14 00:55:08.000000000 +0000
-+++ renpy-source/renpy/pygame/display.pyx	2026-06-30 16:36:29.340415300 +0100
++++ renpy-source/renpy/pygame/display.pyx	2026-06-30 17:05:17.240293600 +0100
 @@ -159,6 +159,17 @@
                  else:
                      SDL_SetWindowTitle(self.window, title)
@@ -327,7 +510,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              flags |= SDL_WINDOW_HIDDEN
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/savelocation.py renpy-source/renpy/savelocation.py
 --- .renpy-pristine/renpy/savelocation.py	2026-01-12 02:51:17.000000000 +0000
-+++ renpy-source/renpy/savelocation.py	2026-06-30 16:36:29.345994700 +0100
++++ renpy-source/renpy/savelocation.py	2026-07-02 13:57:24.918696900 +0100
 @@ -37,6 +37,9 @@
  from renpy.loadsave import clear_slot, safe_rename
  import shutil
@@ -338,29 +521,73 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  disk_lock = threading.RLock()
  
  # A suffix used to disambguate temporary files being written by multiple
-@@ -100,6 +103,9 @@
+@@ -100,6 +103,32 @@
  
          emscripten.syncfs()
  
 +    if renpy.switch:
 +        _otrhlibnx.commitsave()
 +
++
++def _switch_zip_mtime(path):
++    """
++    The Switch savedata filesystem does not record per-file modification times
++    (os.path.getmtime always returns 0 there), so recover a save's time from the
++    timestamp Python's zipfile stamps into each member when the save is written
++    (writestr uses the current local time). Returns a POSIX timestamp, or 0.
++    """
++    try:
++        import zipfile
++        with zipfile.ZipFile(path, "r") as zf:
++            best = 0.0
++            for zi in zf.infolist():
++                dt = zi.date_time
++                if dt[0] < 1980:
++                    continue
++                t = time.mktime((dt[0], dt[1], dt[2], dt[3], dt[4], dt[5], 0, 0, -1))
++                if t > best:
++                    best = t
++            return best
++    except Exception:
++        return 0
++
  
  class FileLocation(object):
      """
-@@ -666,6 +672,9 @@
+@@ -178,7 +207,14 @@
+                 slotname = fn[:-suffix_len]
+ 
+                 try:
+-                    new_mtimes[slotname] = os.path.getmtime(os.path.join(self.directory, fn))
++                    full = os.path.join(self.directory, fn)
++                    mt = os.path.getmtime(full)
++                    # Switch savedata has no per-file mtime (getmtime is always 0).
++                    # Recover the real save time from the timestamp inside the save
++                    # zip so the load/save screen shows it instead of 1970.
++                    if renpy.switch and not mt:
++                        mt = _switch_zip_mtime(full)
++                    new_mtimes[slotname] = mt
+                 except Exception:
+                     pass
+ 
+@@ -666,6 +702,14 @@
  
  
  def quit():
-+    if renpy.switch:
-+        return
-+
++    # NOTE: this used to early-return on Switch, which left the background
++    # save-scan thread(s) running forever. Because init() calls quit() before
++    # starting a new thread, that also orphaned the previous thread on every
++    # re-init (main.py init()s twice) — so two run_scan_thread threads leaked.
++    # Those unjoined threads were still executing NRO code at process exit, and
++    # when hbloader unmapped the NRO to return to the menu they faulted
++    # (Instruction Abort -> "software closed because an error occurred"). We must
++    # stop and JOIN them here so a clean return to hbmenu is possible.
      global quit_scan_thread
  
      with scan_thread_condition:
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/script.py renpy-source/renpy/script.py
 --- .renpy-pristine/renpy/script.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/script.py	2026-06-30 16:36:29.355062700 +0100
++++ renpy-source/renpy/script.py	2026-06-30 17:05:17.255944300 +0100
 @@ -900,7 +900,7 @@
                      bad_reduction_name=f"<{fn} transformed rpyc data>",
                  )
@@ -372,7 +599,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
                              self.write_rpyc_header(f)
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy.py renpy-source/renpy.py
 --- .renpy-pristine/renpy.py	2026-05-16 02:28:26.000000000 +0100
-+++ renpy-source/renpy.py	2026-06-30 16:36:29.361156700 +0100
++++ renpy-source/renpy.py	2026-07-01 22:05:22.248793600 +0100
 @@ -44,6 +44,9 @@
          The basename of the executable, with the extension removed.
      """
@@ -393,17 +620,31 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      path = renpy_base + "/renpy/common"
  
      if os.path.isdir(path):
-@@ -123,6 +129,9 @@
+@@ -123,6 +129,23 @@
          except Exception:
              return False
  
 +    if renpy.switch:
++        # Every homebrew NRO launched from hbmenu runs under the SAME ProgramId, so
++        # the mounted "save:" partition is shared across all builds. Isolate each game
++        # by its config.save_directory (Ren'Py assigns a unique value per project), so
++        # different games get their own save folder instead of clobbering each other.
++        # (Different builds/versions of the SAME game keep the same save_directory and
++        # therefore share saves, which is the desired behaviour for updates.)
++        sd = save_directory
++        if isinstance(sd, bytes):
++            sd = sd.decode("utf-8", "replace")
++        if sd:
++            import re
++            sub = re.sub(r"[^A-Za-z0-9._-]", "_", sd).strip("_")
++            if sub:
++                return "save:/Data/" + sub + "/"
 +        return "save:/Data/"
 +
      # Android.
      if renpy.android:
          paths = [
-@@ -211,6 +220,9 @@
+@@ -211,6 +234,9 @@
      Returns the absolute path to the Ren'Py base directory.
      """
  
@@ -413,7 +654,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      renpy_base = os.path.dirname(os.path.abspath(__file__))
      renpy_base = os.path.abspath(renpy_base)
  
-@@ -225,6 +237,9 @@
+@@ -225,6 +251,9 @@
  
      import renpy # @UnresolvedImport
  
@@ -423,26 +664,9 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      if renpy.android:
          return os.environ['ANDROID_PUBLIC']
  
-diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/encryption.patch renpy-source/src/libhydrogen/impl/encryption.patch
---- .renpy-pristine/src/libhydrogen/impl/encryption.patch	1970-01-01 01:00:00.000000000 +0100
-+++ renpy-source/src/libhydrogen/impl/encryption.patch	2026-06-30 16:36:29.250396500 +0100
-@@ -0,0 +1,13 @@
-+diff -Naur a/random.h b/random.h
-+--- a/random.h
-++++ b/random.h
-+@@ -28,7 +28,9 @@
-+ #elif defined(STM32F4)
-+ # include "random/stm32.h"
-+ #elif defined(__RTTHREAD__)
-+ # include "random/rtthread.h"
-++#elif defined(__SWITCH__)
-++# include "random/switch_enc.h"
-+ #else
-+ # error Unsupported platform
-+ #endif
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/random/switch_enc.h renpy-source/src/libhydrogen/impl/random/switch_enc.h
 --- .renpy-pristine/src/libhydrogen/impl/random/switch_enc.h	1970-01-01 01:00:00.000000000 +0100
-+++ renpy-source/src/libhydrogen/impl/random/switch_enc.h	2026-06-30 16:36:29.238520400 +0100
++++ renpy-source/src/libhydrogen/impl/random/switch_enc.h	2026-06-30 18:03:37.304939800 +0100
 @@ -0,0 +1,30 @@
 +#ifndef hydro_random_switch_enc_H
 +#define hydro_random_switch_enc_H
@@ -476,7 +700,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 +#endif
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/src/libhydrogen/impl/random.h renpy-source/src/libhydrogen/impl/random.h
 --- .renpy-pristine/src/libhydrogen/impl/random.h	2025-07-13 06:38:59.000000000 +0100
-+++ renpy-source/src/libhydrogen/impl/random.h	2026-06-30 16:36:29.263381400 +0100
++++ renpy-source/src/libhydrogen/impl/random.h	2026-06-30 18:03:29.546965900 +0100
 @@ -29,6 +29,8 @@
  # include "random/stm32.h"
  #elif defined(__RTTHREAD__)

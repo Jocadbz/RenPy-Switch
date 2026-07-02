@@ -5,6 +5,8 @@
 #include <wchar.h>
 #include <locale.h>
 #include <unistd.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <png.h>
@@ -329,6 +331,155 @@ PyMODINIT_FUNC PyInit__nx(void)
 }
 
 /* -------------------------------------------------------
+   _switch_splash module — boot splash + load progress
+
+   Ren'Py's presplash draws to a software SDL surface, which the Switch's GL-only
+   window cannot provide. Instead we render the splash image + a progress bar with an
+   SDL_Renderer here (the same proven path show_logos() uses), driven from Python's
+   presplash pump during script load. The window is fully torn down in end() BEFORE
+   Ren'Py creates its GL window, so there is never a second window on the single
+   nwindow and no SDL_Renderer/GL-context conflict (the reason the old adopt-window
+   splash faulted).
+------------------------------------------------------- */
+
+static SDL_Window   *g_splash_win = NULL;
+static SDL_Renderer *g_splash_ren = NULL;
+static SDL_Texture  *g_splash_tex = NULL;
+static int g_splash_w = 0, g_splash_h = 0;   /* window size */
+static int g_tex_w = 0, g_tex_h = 0;          /* splash texture size */
+
+static void splash_draw(double frac)
+{
+    if (!g_splash_ren) return;
+
+    SDL_SetRenderDrawColor(g_splash_ren, 0, 0, 0, 255);
+    SDL_RenderClear(g_splash_ren);
+
+    /* Splash image: contain-fit, centered (preserve aspect, no distortion). */
+    if (g_splash_tex && g_tex_w > 0 && g_tex_h > 0) {
+        double sx = (double)g_splash_w / g_tex_w;
+        double sy = (double)g_splash_h / g_tex_h;
+        double s  = sx < sy ? sx : sy;
+        int dw = (int)(g_tex_w * s);
+        int dh = (int)(g_tex_h * s);
+        SDL_Rect dst = { (g_splash_w - dw) / 2, (g_splash_h - dh) / 2, dw, dh };
+        SDL_RenderCopy(g_splash_ren, g_splash_tex, NULL, &dst);
+    }
+
+    /* Progress bar near the bottom. */
+    int margin = g_splash_w / 8;
+    int bar_w  = g_splash_w - 2 * margin;
+    int bar_h  = 14;
+    int bar_x  = margin;
+    int bar_y  = g_splash_h - 60;
+
+    SDL_SetRenderDrawColor(g_splash_ren, 40, 40, 40, 255);   /* track */
+    SDL_Rect track = { bar_x, bar_y, bar_w, bar_h };
+    SDL_RenderFillRect(g_splash_ren, &track);
+
+    SDL_SetRenderDrawColor(g_splash_ren, 220, 220, 220, 255); /* fill */
+    if (frac >= 0.0) {
+        if (frac > 1.0) frac = 1.0;
+        SDL_Rect fill = { bar_x, bar_y, (int)(bar_w * frac), bar_h };
+        SDL_RenderFillRect(g_splash_ren, &fill);
+    } else {
+        /* Indeterminate: a segment sliding back and forth (0->1->0 over 2s). */
+        int seg = bar_w / 4;
+        Uint32 t = SDL_GetTicks() % 2000;
+        double p = (t < 1000) ? (t / 1000.0) : (2.0 - t / 1000.0);
+        SDL_Rect fill = { bar_x + (int)((bar_w - seg) * p), bar_y, seg, bar_h };
+        SDL_RenderFillRect(g_splash_ren, &fill);
+    }
+
+    SDL_RenderPresent(g_splash_ren);
+}
+
+static PyObject* py_splash_start(PyObject* self, PyObject* args)
+{
+    const char *path = "romfs:/Contents/splash.png";
+    if (!PyArg_ParseTuple(args, "|s", &path))
+        return NULL;
+
+    if (g_splash_win)
+        return PyLong_FromLong(1);            /* already started */
+
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
+        printf("[splash] video init failed: %s\n", SDL_GetError()); fflush(stdout);
+        return PyLong_FromLong(0);
+    }
+    IMG_Init(IMG_INIT_PNG);
+
+    g_splash_win = SDL_CreateWindow("Splash", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                    1280, 720, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN);
+    if (!g_splash_win) {
+        printf("[splash] window failed: %s\n", SDL_GetError()); fflush(stdout);
+        return PyLong_FromLong(0);
+    }
+    g_splash_ren = SDL_CreateRenderer(g_splash_win, -1, SDL_RENDERER_ACCELERATED);
+    if (!g_splash_ren) {
+        printf("[splash] renderer failed: %s\n", SDL_GetError()); fflush(stdout);
+        SDL_DestroyWindow(g_splash_win); g_splash_win = NULL;
+        return PyLong_FromLong(0);
+    }
+    SDL_GetWindowSize(g_splash_win, &g_splash_w, &g_splash_h);
+
+    g_splash_tex = IMG_LoadTexture(g_splash_ren, path);
+    if (g_splash_tex) {
+        SDL_QueryTexture(g_splash_tex, NULL, NULL, &g_tex_w, &g_tex_h);
+    } else {
+        printf("[splash] no image at %s (%s); showing bar on black\n", path, IMG_GetError());
+        fflush(stdout);
+    }
+
+    splash_draw(0.0);
+    printf("[splash] started (%dx%d)\n", g_splash_w, g_splash_h); fflush(stdout);
+    return PyLong_FromLong(1);
+}
+
+static PyObject* py_splash_pump(PyObject* self, PyObject* args)
+{
+    double frac = -1.0;
+    if (!PyArg_ParseTuple(args, "|d", &frac))
+        return NULL;
+
+    /* Drain events so the OS doesn't flag us unresponsive during the long load. */
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) { /* discard */ }
+
+    splash_draw(frac);
+    Py_RETURN_NONE;
+}
+
+static PyObject* py_splash_end(PyObject* self, PyObject* args)
+{
+    (void)self; (void)args;
+    if (g_splash_tex) { SDL_DestroyTexture(g_splash_tex); g_splash_tex = NULL; }
+    if (g_splash_ren) { SDL_DestroyRenderer(g_splash_ren); g_splash_ren = NULL; }
+    if (g_splash_win) { SDL_DestroyWindow(g_splash_win);   g_splash_win = NULL; }
+    IMG_Quit();
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    svcSleepThread(100000000ULL);             /* 100ms settle, mirrors show_logos */
+    printf("[splash] ended\n"); fflush(stdout);
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef SplashMethods[] = {
+    {"start", py_splash_start, METH_VARARGS, "Create the boot splash window and show the image."},
+    {"pump",  py_splash_pump,  METH_VARARGS, "Redraw the splash; arg is 0..1 progress, or <0 for indeterminate."},
+    {"end",   py_splash_end,   METH_VARARGS, "Tear down the splash window before Ren'Py builds its GL window."},
+    {NULL, NULL, 0, NULL}
+};
+
+static struct PyModuleDef splash_module = {
+    PyModuleDef_HEAD_INIT, "_switch_splash", NULL, -1, SplashMethods
+};
+
+PyMODINIT_FUNC PyInit__switch_splash(void)
+{
+    return PyModule_Create(&splash_module);
+}
+
+/* -------------------------------------------------------
    _otrhlibnx module
 ------------------------------------------------------- */
 
@@ -641,9 +792,11 @@ Result createSaveData(void)
 
 void userAppInit()
 {
-    fsInitialize();
     nsInitialize();
-    fsdevMountSdmc();
+    /* fs, sdmc, and the wall-clock time service (timeInitialize + __libnx_init_time)
+       are already brought up by libnx's default __appInit() before this hook runs, so
+       we don't repeat them. The clock matters for saves: without it time() returns
+       epoch 0 and files are stamped 1970. */
 
     freopen("sdmc:/renpy_switch.log", "a", stdout);
     /* Don't freopen the SAME file twice — opening renpy_switch.log a second time
@@ -655,7 +808,7 @@ void userAppInit()
     setvbuf(stderr, NULL, _IONBF, 0);
 
     printf("=== Ren'Py 8 Switch launcher ===\n");
-    
+
     Result rc = 0;
     PselUserSelectionSettings settings;
     
@@ -724,14 +877,28 @@ void userAppInit()
 
 void userAppExit(void)
 {
+    /* This is only a HOOK. libnx's default __appExit() (runtime/init.c) calls us
+       first and then does the standard service teardown ITSELF:
+           fsdevUnmountAll(); fsExit(); timeExit(); hidExit(); appletExit(); smExit();
+       So we must NOT repeat any of that here. Previously this hook also called
+       fsExit()/fsdevUnmountDevice()/romfsExit(), which meant libnx tore the same
+       services down a SECOND time and faulted on the way out — the "software was
+       closed because an error occurred" dialog — even though this hook itself ran to
+       completion. We now do ONLY the things libnx does not:
+         - appletUnlockExit(): balance the appletLockExit() from startup, so the exit
+           isn't reported as an abnormal (locked) termination. Guarded by libnx, so the
+           second unlock on the HOME-menu OnExitRequest path is a harmless no-op.
+         - fsdevCommitDevice("save"): flush the savedata to NAND *before* libnx's
+           fsdevUnmountAll() unmounts it (unmount does not commit).
+         - nsExit(): we opened ns in userAppInit(); libnx never does, so we balance it.
+       socketExit() is intentionally omitted (it blocks in the bsd teardown; the kernel
+       closes sockets on process exit). romfs is unmounted by libnx's fsdevUnmountAll. */
+    appletUnlockExit();
+
     if (fsdevGetDeviceFileSystem("save"))
         fsdevCommitDevice("save");
 
-    fsdevUnmountDevice("save");
-    socketExit();
-    romfsExit();
     nsExit();
-    fsExit(); 
 }
 
 /* -------------------------------------------------------
@@ -980,6 +1147,7 @@ int main(int argc, char* argv[])
 
         {"_nx", PyInit__nx},
         {"_otrhlibnx", PyInit__otrhlibnx},
+        {"_switch_splash", PyInit__switch_splash},
 
         {"renpy.pygame.error", PyInit_renpy_pygame_error},
         {"renpy.pygame.color", PyInit_renpy_pygame_color},
@@ -1124,6 +1292,7 @@ int main(int argc, char* argv[])
        We then dump the formatted traceback straight to fd 2 (our log) via os.write,
        which no sys.stderr reassignment can hide. */
     int rc = 0;
+    int clean_exit = 0;
     {
         PyObject *main_mod  = PyImport_AddModule("__main__");   /* borrowed */
         PyObject *main_dict = PyModule_GetDict(main_mod);       /* borrowed */
@@ -1137,25 +1306,57 @@ int main(int argc, char* argv[])
         PyObject *res = PyRun_FileEx(renpy_file, "romfs:/Contents/renpy.py",
                                      Py_file_input, main_dict, main_dict, 1 /*closeit*/);
         if (res == NULL) {
-            rc = -1;
             PyObject *exc = PyErr_GetRaisedException();         /* steals ref, clears error */
-            PyDict_SetItemString(main_dict, "_renpy_exc", exc ? exc : Py_None);
-            PyRun_SimpleString(
-                "import os, traceback\n"
-                "try:\n"
-                "    _t = ''.join(traceback.format_exception(_renpy_exc))\n"
-                "except BaseException as _e:\n"
-                "    _t = '[py] could not format exception: %r\\n' % (_e,)\n"
-                "os.write(2, b'[py] === renpy.py traceback ===\\n')\n"
-                "os.write(2, _t.encode('utf-8', 'replace'))\n"
-                "os.write(2, b'[py] === end traceback ===\\n')\n"
-            );
-            Py_XDECREF(exc);
+
+            if (exc && PyErr_GivenExceptionMatches(exc, PyExc_SystemExit)) {
+                /* NOT a crash. Ren'Py's Quit action (and config.quit) calls sys.exit(),
+                   which reaches us as SystemExit — the same NULL return a real error
+                   gives. Treat it as a normal shutdown: don't pop the Switch error
+                   applet (show_error), just fall through and return to hbmenu. */
+                clean_exit = 1;
+                printf("[main] Ren'Py exited normally (SystemExit)\n"); fflush(stdout);
+                Py_XDECREF(exc);
+            } else {
+                rc = -1;
+                PyDict_SetItemString(main_dict, "_renpy_exc", exc ? exc : Py_None);
+                PyRun_SimpleString(
+                    "import os, traceback\n"
+                    "try:\n"
+                    "    _t = ''.join(traceback.format_exception(_renpy_exc))\n"
+                    "except BaseException as _e:\n"
+                    "    _t = '[py] could not format exception: %r\\n' % (_e,)\n"
+                    "os.write(2, b'[py] === renpy.py traceback ===\\n')\n"
+                    "os.write(2, _t.encode('utf-8', 'replace'))\n"
+                    "os.write(2, b'[py] === end traceback ===\\n')\n"
+                );
+                Py_XDECREF(exc);
+            }
         } else {
             Py_DECREF(res);
         }
     }
-    printf("[main] renpy.py returned %d\n", rc); fflush(stdout);
+    printf("[main] renpy.py returned %d (clean_exit=%d)\n", rc, clean_exit); fflush(stdout);
+
+    if (clean_exit) {
+        /* Clean shutdown back to hbmenu. Two things are essential and subtle:
+
+           1) All worker threads must be dead first. hbloader runs our NRO as code
+              memory inside its own process and, on the normal exit path, unmaps that
+              code to load the next NRO — any thread still executing it faults with an
+              Instruction Abort ("software closed because an error occurred"). Ren'Py's
+              save-scan threads are stopped via savelocation.quit() (no longer a Switch
+              no-op), and SDL_Quit() tears down the video subsystem so the GL driver
+              (Mesa) joins its native util_queue worker pool. After this, only the main
+              thread remains.
+
+           2) _exit() rather than return/exit(): the C++ static-destructor pass run by
+              exit() faults on the way out, so we skip it. _exit() still runs libnx's
+              __appExit() -> userAppExit() (appletUnlockExit + save commit + nsExit) and
+              then __nx_exit(envGetExitFuncPtr()), the proper handoff to hbloader.
+           We also intentionally skip Py_Finalize() (its teardown is a crash risk). */
+        SDL_Quit();
+        _exit(0);
+    }
 
     if (rc != 0) {
         show_error("Ren'Py execution failed");

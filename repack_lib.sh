@@ -39,6 +39,46 @@ if [ ! -d "$DEPS/ecdsa" ]; then
 fi
 cp -r "$DEPS"/. raw/lib/
 
+# Switch: the platform _socket C module has no gethostname() (Horizon has no hostname
+# concept), so games doing `from socket import gethostname` / socket.gethostname()
+# crash on import. Append a guarded stub to the bundled socket.py (idempotent).
+if [ -f raw/lib/socket.py ] && ! grep -q RENPY_SWITCH_GETHOSTNAME raw/lib/socket.py; then
+cat >> raw/lib/socket.py <<'PYEOF'
+
+# RENPY_SWITCH_GETHOSTNAME: Horizon _socket omits gethostname(); provide a stub.
+try:
+    gethostname
+except NameError:
+    def gethostname():
+        return "switch"
+PYEOF
+fi
+
+# Switch runs Python 3.13, where random.randrange() rejects non-integer (float) args;
+# many older Ren'Py games pass floats (e.g. float render sizes). Append a leniency
+# shim to random.py that int()-coerces the arguments (idempotent).
+if [ -f raw/lib/random.py ] && ! grep -q RENPY_SWITCH_RANDRANGE raw/lib/random.py; then
+cat >> raw/lib/random.py <<'PYEOF'
+
+# RENPY_SWITCH_RANDRANGE: coerce non-integer randrange() args to int (pre-3.11 behaviour).
+try:
+    _rr_orig_switch = Random.randrange
+    def _rr_switch(self, start, stop=None, step=_ONE, _orig=_rr_orig_switch):
+        if not isinstance(start, int):
+            start = int(start)
+        if stop is not None and not isinstance(stop, int):
+            stop = int(stop)
+        if step is not _ONE and not isinstance(step, int):
+            step = int(step)
+        return _orig(self, start, stop, step)
+    Random.randrange = _rr_switch
+    randrange = _inst.randrange
+    randint = _inst.randint
+except Exception:
+    pass
+PYEOF
+fi
+
 # Pre-compile .py -> .pyc (sourceless) so the on-device interpreter loads bytecode
 # directly instead of re-parsing every module each boot. Any CPython 3.13.x emits
 # magic-compatible bytecode for the device's 3.13.14 (magic is frozen per minor).
@@ -53,6 +93,11 @@ echo "  .py left (failed/none): $(find raw/lib -name '*.py' | wc -l);  .pyc: $(f
 rm -f raw/switch/romfs/Contents/lib.zip
 ( cd raw/lib && 7z a -tzip -mx0 ../switch/romfs/Contents/lib.zip ./* >/dev/null )
 rm -rf raw/lib
+
+# Keep the deployed launcher in sync with the patched source. path_to_saves (the
+# Switch per-game save path) and other launcher logic live in renpy.py, which is NOT
+# part of lib.zip — build.bash is otherwise the only place that copies it.
+cp renpy-source/renpy.py raw/switch/romfs/Contents/renpy.py
 
 $DEVKITPRO/tools/bin/elf2nro build/renpy-switch.elf the_question.nro \
     --nacp=the_question.nacp \

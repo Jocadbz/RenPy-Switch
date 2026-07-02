@@ -23,6 +23,12 @@ cp sources/switch_stubs.c  source/module/switch_stubs.c
 
 echo "    relinking ELF (-j$JOBS)"
 rm -f build/renpy-switch.elf
+# Force the hand-written sources to RECOMPILE, not just relink. Over the mounted
+# drive, make's mtime comparison can wrongly decide main.o is up-to-date and relink
+# stale object code (symptom: source edits don't take effect on device). Deleting the
+# objects guarantees a fresh compile.
+find build -name 'main.o' -delete 2>/dev/null || true
+find build -name 'switch_stubs.o' -delete 2>/dev/null || true
 ( cd build && make -j"$JOBS" 2>&1 | tee /tmp/renpy_link.log | tail -8 )
 grep -oE "undefined reference to .*" /tmp/renpy_link.log | sort -u || true
 if [ ! -f build/renpy-switch.elf ]; then
