@@ -301,6 +301,31 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      # Inside of the file, which may not be openable.
      try:
          f, te.traceback_fn = open_error_file("traceback.txt", "w")
+diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/exports/restartexports.py renpy-source/renpy/exports/restartexports.py
+--- .renpy-pristine/renpy/exports/restartexports.py	2026-01-12 02:51:17.000000000 +0000
++++ renpy-source/renpy/exports/restartexports.py	2026-07-03 15:30:55.806043800 +0100
+@@ -124,6 +124,21 @@
+         terminates.
+     """
+ 
++    if renpy.switch and not relaunch:
++        # Switch: a homebrew application cannot cleanly self-exit to the HOME menu —
++        # svcExitProcess makes qlaunch show a "software was closed" notice (it's not a
++        # crash; the system just flags any application self-terminating). Official
++        # Switch titles have no in-game quit; the clean exit is the HOME button, which
++        # the C OnExitRequest hook handles (committing saves). So neutralize the
++        # in-game quit across ALL games: tell the player to use HOME instead of
++        # terminating. (The Quit button is also hidden in standard games via the
++        # non-"pc" variant, but this covers games with custom screens.)
++        try:
++            renpy.exports.notify("Press the HOME button to exit.")
++        except Exception:
++            pass
++        return
++
+     if save and (renpy.store._quit_slot is not None):
+         renpy.loadsave.save(renpy.store._quit_slot, getattr(renpy.store, "save_name", ""))
+ 
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/gl2/assimp.py renpy-source/renpy/gl2/assimp.py
 --- .renpy-pristine/renpy/gl2/assimp.py	1970-01-01 01:00:00.000000000 +0100
 +++ renpy-source/renpy/gl2/assimp.py	2026-06-30 17:05:17.176885800 +0100
@@ -585,8 +610,24 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/main.py renpy-source/renpy/main.py
 --- .renpy-pristine/renpy/main.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/main.py	2026-06-30 17:05:17.212337200 +0100
-@@ -349,6 +349,11 @@
++++ renpy-source/renpy/main.py	2026-07-03 15:30:35.516293800 +0100
+@@ -294,6 +294,15 @@
+         else:
+             renpy.config.variants.insert(0, "large")  # type: ignore
+ 
++    elif renpy.switch:
++        # Switch is a handheld console already running as renpy.mobile. Use the
++        # "mobile" variant (NOT "pc") so the standard Quit button — gated on
++        # renpy.variant("pc") in the default screens — is hidden, matching official
++        # Switch titles that have no in-game quit (you exit via the HOME button). We
++        # intentionally do NOT add phone/small/tablet, so each game's base (desktop)
++        # GUI layout and resolution are preserved.
++        renpy.config.variants.insert(0, "mobile")  # type: ignore
++
+     else:
+         renpy.config.variants.insert(0, "pc")  # type: ignore
+ 
+@@ -349,6 +358,11 @@
      renpy.config.commondir = renpy.__main__.path_to_common(renpy.config.renpy_base)  # E1101 @UndefinedVariable
      renpy.config.searchpath = renpy.__main__.predefined_searchpath(renpy.config.commondir)  # E1101 @UndefinedVariable
  

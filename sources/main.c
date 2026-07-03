@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+#include <EGL/egl.h>
 #include <png.h>
 #include "video_player.h"
 
@@ -42,6 +43,19 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx)
     printf("[main]  LR = 0x%016lx\n", (unsigned long)ctx->lr.x);
     printf("[main]  FP = 0x%016lx\n", (unsigned long)ctx->fp.x);
     printf("[main]  SP = 0x%016lx\n", (unsigned long)ctx->sp.x);
+    /* Walk the AArch64 frame-pointer chain to print the call stack. Each frame stores
+       the caller's fp at [fp] and the return address at [fp+8]. addr2line these against
+       renpy-switch.elf after subtracting the module base (compute from the [base] line
+       printed at startup: base = runtime &userAppInit - nm(userAppInit)). */
+    unsigned long fp = (unsigned long)ctx->fp.x;
+    for (int i = 0; i < 20 && fp && !(fp & 7); i++) {
+        unsigned long next = ((unsigned long *)fp)[0];
+        unsigned long ret  = ((unsigned long *)fp)[1];
+        if (!ret) break;
+        printf("[main]  stack[%2d] ret = 0x%016lx\n", i, ret);
+        if (next <= fp) break;   /* frame pointers must ascend; stop if not */
+        fp = next;
+    }
     fflush(stdout);
 }
 
@@ -808,6 +822,9 @@ void userAppInit()
     setvbuf(stderr, NULL, _IONBF, 0);
 
     printf("=== Ren'Py 8 Switch launcher ===\n");
+    /* Module base reference for resolving crash addresses: base = this runtime addr
+       minus nm(userAppInit) in renpy-switch.elf. */
+    printf("[base] &userAppInit=%p\n", (void*)&userAppInit); fflush(stdout);
 
     Result rc = 0;
     PselUserSelectionSettings settings;
@@ -878,26 +895,31 @@ void userAppInit()
 void userAppExit(void)
 {
     /* This is only a HOOK. libnx's default __appExit() (runtime/init.c) calls us
-       first and then does the standard service teardown ITSELF:
+       first and then tears down the standard services ITSELF:
            fsdevUnmountAll(); fsExit(); timeExit(); hidExit(); appletExit(); smExit();
-       So we must NOT repeat any of that here. Previously this hook also called
-       fsExit()/fsdevUnmountDevice()/romfsExit(), which meant libnx tore the same
-       services down a SECOND time and faulted on the way out — the "software was
-       closed because an error occurred" dialog — even though this hook itself ran to
-       completion. We now do ONLY the things libnx does not:
-         - appletUnlockExit(): balance the appletLockExit() from startup, so the exit
-           isn't reported as an abnormal (locked) termination. Guarded by libnx, so the
-           second unlock on the HOME-menu OnExitRequest path is a harmless no-op.
-         - fsdevCommitDevice("save"): flush the savedata to NAND *before* libnx's
-           fsdevUnmountAll() unmounts it (unmount does not commit).
-         - nsExit(): we opened ns in userAppInit(); libnx never does, so we balance it.
-       socketExit() is intentionally omitted (it blocks in the bsd teardown; the kernel
-       closes sockets on process exit). romfs is unmounted by libnx's fsdevUnmountAll. */
+       So we must NOT repeat any of that (doing so double-freed and faulted before).
+       We close ONLY what WE opened in userAppInit() that libnx does not.
+
+       This matters more than it looks: hbloader loads our NRO inside its own
+       long-lived process and, on exit, we return to it (hbmenu) rather than ending
+       the process — so any service session we leave open persists, and the NEXT
+       launch collides with it. That was the "reload crashes the console" bug: we
+       leaked the bsd socket session, so run 2's socketInitializeDefault() aborted the
+       bsdsocket sysmodule (User Break) and took hbloader down. So we MUST:
+         - appletUnlockExit(): balance the startup appletLockExit().
+         - fsdevCommitDevice("save"): flush saves to NAND before libnx unmounts.
+         - socketExit(): release the bsd session (the reload-crash fix). It only
+           appeared to hang before because worker threads were still alive — SDL_Quit()
+           and stopping the scan threads now join them before we reach here.
+         - accountExit() / nsExit(): release the account + ns sessions we opened.
+       romfs is unmounted by libnx's fsdevUnmountAll(). */
     appletUnlockExit();
 
     if (fsdevGetDeviceFileSystem("save"))
         fsdevCommitDevice("save");
 
+    socketExit();
+    accountExit();
     nsExit();
 }
 
@@ -1364,22 +1386,44 @@ int main(int argc, char* argv[])
     printf("[main] renpy.py returned %d (clean_exit=%d)\n", rc, clean_exit); fflush(stdout);
 
     if (clean_exit) {
-        /* Clean shutdown back to hbmenu. Two things are essential and subtle:
+        /* Exit is mode-aware, because applet mode and application mode need opposite
+           handling — and the mode is fixed by HOW hbloader was launched:
 
-           1) All worker threads must be dead first. hbloader runs our NRO as code
-              memory inside its own process and, on the normal exit path, unmaps that
-              code to load the next NRO — any thread still executing it faults with an
-              Instruction Abort ("software closed because an error occurred"). Ren'Py's
-              save-scan threads are stopped via savelocation.quit() (no longer a Switch
-              no-op), and SDL_Quit() tears down the video subsystem so the GL driver
-              (Mesa) joins its native util_queue worker pool. After this, only the main
-              thread remains.
+           - APPLICATION mode (forwarder NSP / title takeover; AppletType_*Application):
+             full memory, and svcExitProcess() is the normal, clean exit to HOME with
+             NO error dialog. Each launch is then a fresh process, so relaunch works and
+             Mesa re-inits from scratch. This is the recommended way to run the loader.
 
-           2) _exit() rather than return/exit(): the C++ static-destructor pass run by
-              exit() faults on the way out, so we skip it. _exit() still runs libnx's
-              __appExit() -> userAppExit() (appletUnlockExit + save commit + nsExit) and
-              then __nx_exit(envGetExitFuncPtr()), the proper handoff to hbloader.
-           We also intentionally skip Py_Finalize() (its teardown is a crash risk). */
+           - APPLET mode (launched via the album applet; AppletType_LibraryApplet):
+             svcExitProcess() there pops the system "closed because an error occurred"
+             notice, so instead we return to hbloader (hbmenu) cleanly. Caveat: applet
+             mode reuses this process on relaunch, and Mesa/nouveau does not re-init a
+             second time in one process (run 2's first GPU alloc faults). So relaunch is
+             only reliable in application mode. */
+        appletUnlockExit();
+        if (fsdevGetDeviceFileSystem("save"))
+            fsdevCommitDevice("save");
+        fflush(stdout);
+
+        AppletType at = appletGetAppletType();
+        if (at == AppletType_Application || at == AppletType_SystemApplication) {
+            printf("[main] clean exit (application mode) -> svcExitProcess -> HOME\n"); fflush(stdout);
+            svcExitProcess();
+        }
+
+        /* Applet mode: clean return to hbmenu, no dialog. Free the GPU while Mesa/EGL
+           is still alive (order matters — eglTerminate AFTER SDL_Quit crashed with
+           PC=1 via a freed dispatch pointer), then SDL_Quit() to join SDL's threads,
+           then _exit() to skip the faulting static-destructor pass. */
+        printf("[main] clean exit (applet mode) -> eglTerminate + SDL_Quit + _exit\n"); fflush(stdout);
+        {
+            EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+            if (dpy != EGL_NO_DISPLAY) {
+                eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+                eglTerminate(dpy);
+            }
+            eglReleaseThread();
+        }
         SDL_Quit();
         _exit(0);
     }
