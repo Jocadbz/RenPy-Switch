@@ -52,7 +52,11 @@ set(C_FLAGS
 )
 
 set(OPT_FLAGS
-    -Ofast
+    # -O2 rather than -Ofast: GCC 16.1.0 (devkitA64) segfaults (ICE) in the -O3/-Ofast
+    # value-numbering passes (fre/pre) on Ren'Py's huge Cython-generated .c files, and
+    # -Ofast's -ffast-math can subtly change FP results. -O2 is well-tested, uses much
+    # less compiler memory, and the runtime difference is negligible (GPU-bound).
+    -O2
     -fsingle-precision-constant
     -fno-common
 )

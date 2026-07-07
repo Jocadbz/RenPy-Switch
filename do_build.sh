@@ -1,4 +1,4 @@
-cd /mnt/d/Source/renpy_switch/RenpySwitch
+cd /renpy_switch/RenpySwitch
 cp sources/main.c source/main.c
 cd build && make 2>&1 | tail -5 && cd ..
 

@@ -99,9 +99,18 @@ rm -rf raw/lib
 # part of lib.zip — build.bash is otherwise the only place that copies it.
 cp renpy-source/renpy.py raw/switch/romfs/Contents/renpy.py
 
-$DEVKITPRO/tools/bin/elf2nro build/renpy-switch.elf the_question.nro \
-    --nacp=the_question.nacp \
-    --icon=../PyNX_python3.13.0_horizonOS_switch/icon.jpg \
-    --romfsdir=raw/switch/romfs
-
-echo "== repacked the_question.nro =="
+# lib.zip is now repacked — that is the goal of this script. The step below rebuilds
+# the LEGACY embedded-game the_question.nro; the loader workflow builds loader.nro
+# separately (see build commands / rebuild_engine.sh), so a missing ELF or nacp here
+# must NOT abort the script.
+echo "== lib.zip repacked =="
+if [ -f build/renpy-switch.elf ] && [ -f the_question.nacp ]; then
+    $DEVKITPRO/tools/bin/elf2nro build/renpy-switch.elf the_question.nro \
+        --nacp=the_question.nacp \
+        --icon=../PyNX_python3.13.0_horizonOS_switch/icon.jpg \
+        --romfsdir=raw/switch/romfs \
+        && echo "== repacked the_question.nro ==" \
+        || echo "== skipped the_question.nro (elf2nro failed; not needed for loader) =="
+else
+    echo "== skipped the_question.nro (no ELF / the_question.nacp; not needed for loader) =="
+fi

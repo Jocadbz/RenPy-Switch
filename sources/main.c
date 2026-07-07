@@ -12,6 +12,11 @@
 #include <EGL/egl.h>
 #include <png.h>
 #include "video_player.h"
+/* Compile the game picker straight into main.o via #include, instead of listing it
+   as a separate CMake source. This sidesteps a mount/cmake-cache flake where CMake
+   kept configuring without game_picker.c (undefined reference to game_picker_run at
+   link). game_picker.c pulls in its own headers (SDL_ttf, zlib, dirent, ...). */
+#include "game_picker.c"
 
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -41,21 +46,7 @@ void __libnx_exception_handler(ThreadExceptionDump *ctx)
     printf("\n[main] *** GUEST CPU EXCEPTION (error_desc=0x%x) ***\n", (unsigned)ctx->error_desc);
     printf("[main]  PC = 0x%016lx\n", (unsigned long)ctx->pc.x);
     printf("[main]  LR = 0x%016lx\n", (unsigned long)ctx->lr.x);
-    printf("[main]  FP = 0x%016lx\n", (unsigned long)ctx->fp.x);
     printf("[main]  SP = 0x%016lx\n", (unsigned long)ctx->sp.x);
-    /* Walk the AArch64 frame-pointer chain to print the call stack. Each frame stores
-       the caller's fp at [fp] and the return address at [fp+8]. addr2line these against
-       renpy-switch.elf after subtracting the module base (compute from the [base] line
-       printed at startup: base = runtime &userAppInit - nm(userAppInit)). */
-    unsigned long fp = (unsigned long)ctx->fp.x;
-    for (int i = 0; i < 20 && fp && !(fp & 7); i++) {
-        unsigned long next = ((unsigned long *)fp)[0];
-        unsigned long ret  = ((unsigned long *)fp)[1];
-        if (!ret) break;
-        printf("[main]  stack[%2d] ret = 0x%016lx\n", i, ret);
-        if (next <= fp) break;   /* frame pointers must ascend; stop if not */
-        fp = next;
-    }
     fflush(stdout);
 }
 
@@ -437,11 +428,19 @@ static PyObject* py_splash_start(PyObject* self, PyObject* args)
     }
     SDL_GetWindowSize(g_splash_win, &g_splash_w, &g_splash_h);
 
-    g_splash_tex = IMG_LoadTexture(g_splash_ren, path);
+    /* Prefer the selected game's gui/main_menu.png as the boot splash; fall back to
+       the default romfs splash.png if the game doesn't ship one. */
+    g_splash_tex = load_selected_game_splash(g_splash_ren);
+    if (g_splash_tex) {
+        printf("[splash] using selected game's gui/main_menu.png\n"); fflush(stdout);
+    } else {
+        g_splash_tex = IMG_LoadTexture(g_splash_ren, path);
+    }
     if (g_splash_tex) {
         SDL_QueryTexture(g_splash_tex, NULL, NULL, &g_tex_w, &g_tex_h);
     } else {
-        printf("[splash] no image at %s (%s); showing bar on black\n", path, IMG_GetError());
+        printf("[splash] no game main_menu.png and no image at %s (%s); showing bar on black\n",
+               path, IMG_GetError());
         fflush(stdout);
     }
 
@@ -745,11 +744,10 @@ PyMODINIT_FUNC PyInit_renpy_pygame_scrap(void);
    Heap override
 ------------------------------------------------------- */
 
-/* DIAGNOSTIC: renamed from __libnx_initheap so libnx uses its default heap init.
-   On real hardware the app hangs before any logging exists; the custom override
-   (svcGetInfo/svcSetHeapSize with a hand-computed size) is the prime suspect since
-   it runs before everything and behaves differently on console vs Ryujinx.
-   Rename back to __libnx_initheap to re-enable. */
+/* Deliberately NOT named __libnx_initheap, so libnx uses its default heap init.
+   The custom override (svcGetInfo/svcSetHeapSize with a hand-computed size) runs
+   before any logging exists and hung on real hardware while working under Ryujinx.
+   Rename back to __libnx_initheap to re-enable the custom heap sizing. */
 void renpyswitch_initheap_unused(void)
 {
     void* addr = NULL;
@@ -821,10 +819,7 @@ void userAppInit()
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    printf("=== Ren'Py 8 Switch launcher ===\n");
-    /* Module base reference for resolving crash addresses: base = this runtime addr
-       minus nm(userAppInit) in renpy-switch.elf. */
-    printf("[base] &userAppInit=%p\n", (void*)&userAppInit); fflush(stdout);
+    printf("=== Ren'Py 8 Switch launcher ===\n"); fflush(stdout);
 
     Result rc = 0;
     PselUserSelectionSettings settings;
@@ -1019,16 +1014,14 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    video_player_init();
-    play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f);
-    video_player_quit();
-   
-    // Показ логотипов при запуске
-    show_logos();
-   
-    video_player_init();
-    play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f);
-    video_player_quit();
+    /* Loader build: skip the intro video + logo splash. There's no embedded game
+       (so no game/intro.webm) and no logo assets, so these only no-op — and each
+       does a full SDL/Mesa init+teardown cycle. Dropping them keeps the GPU cycles
+       to picker -> Ren'Py (one re-init, the known-good pattern) and speeds up boot.
+       (Re-enable for an embedded-game build that ships an intro/logos.) */
+    /* video_player_init(); play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f); video_player_quit(); */
+    /* show_logos(); */
+    /* video_player_init(); play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f); video_player_quit(); */
 
     /* Boot splash disabled: the leave-window adoption faults on hardware because SDL
        forbids mixing an SDL_Renderer with a separate GL context on one window. To do
@@ -1079,15 +1072,33 @@ int main(int argc, char* argv[])
     setenv("vblank_mode", "0", 1);
     setenv("RENPY_GL_VSYNC", "0", 1);
 
-    /* Game-archive selection bridge. If sdmc:/renpy/game.txt exists, its three
-       lines name a .zip/.apk to run on the fly instead of an embedded game:
-           line 1: archive path      e.g.  sdmc:/renpy/MyGame.zip
-           line 2: kind              "apk" (x- prefixed) or "zip" (plain names)
-           line 3: root prefix       e.g.  assets/x-game/   or   MyGame-1.0-pc/game/
-       renpy.loader.find_switch_archive() reads these env vars and mounts the game.
-       (The Stage-2 SDL picker writes this file; it can also be written by hand.)
-       Missing file -> normal embedded-game boot. */
-    {
+    /* This is the Ren'Py LOADER: it shows NO picker of its own. The game to run is
+       chosen by the external game picker, which chains here via envSetNextLoad and
+       passes the selection ON THE COMMAND LINE. Environment variables set with
+       setenv() do NOT survive the NRO hand-off, so — exactly like the Godot runtime
+       is booted with `--main-pack "<pck>"` — the picker invokes us as:
+
+           renpy_loader.nro --archive "sdmc:/renpy/MyGame.zip" --kind zip --root "MyGame/game/"
+
+       We translate those args into the RENPY_SWITCH_GAME_* env vars that
+       renpy.loader.find_switch_archive() reads in THIS process (where setenv works). */
+    int have_archive = 0;
+    for (int i = 1; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--archive") == 0) {
+            setenv("RENPY_SWITCH_GAME_ARCHIVE", argv[++i], 1);
+            have_archive = 1;
+        } else if (strcmp(argv[i], "--kind") == 0) {
+            setenv("RENPY_SWITCH_GAME_KIND", argv[++i], 1);
+        } else if (strcmp(argv[i], "--root") == 0) {
+            setenv("RENPY_SWITCH_GAME_ROOT", argv[++i], 1);
+        }
+    }
+    for (int i = 0; i < argc; i++) { printf("[loader] argv[%d]=%s\n", i, argv[i]); }
+    fflush(stdout);
+
+    /* Fallback for a manual/direct hbmenu launch with no args: a hand-written
+       sdmc:/renpy/game.txt naming the archive (path / kind / root, one per line). */
+    if (!have_archive) {
         FILE *sel = fopen("sdmc:/renpy/game.txt", "r");
         if (sel) {
             static const char *keys[3] = {

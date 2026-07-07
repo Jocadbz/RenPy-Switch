@@ -46,6 +46,8 @@ find include/module -type d -empty -delete
 cp sources/main.c source/main.c
 cp sources/video_player.c source/video_player.c
 cp sources/video_player.h source/video_player.h
+cp sources/game_picker.c source/game_picker.c
+cp sources/game_picker.h source/game_picker.h
 cp sources/switch_stubs.c source/module/switch_stubs.c   # ENOSYS stubs for libc funcs newlib lacks
 
 echo "== source/module contents =="

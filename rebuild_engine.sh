@@ -19,6 +19,8 @@ echo "==> [1/3] Cythonizing changed .pyx -> renpy-source/tmp/gen3-static/*.c"
 echo "==> [2/3] Gathering generated C + syncing hand-written sources"
 cp renpy-source/tmp/gen3-static/*.c source/module/ 2>/dev/null || true
 cp sources/main.c          source/main.c
+cp sources/game_picker.c   source/game_picker.c
+cp sources/game_picker.h   source/game_picker.h
 cp sources/switch_stubs.c  source/module/switch_stubs.c
 
 echo "    relinking ELF (-j$JOBS)"
