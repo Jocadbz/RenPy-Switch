@@ -1,32 +1,15 @@
-## Описание
+## Description
 
-Данный репозиторий служит сборщиком RenPy на Github Actions
+Ren'Py 8.5.7 for Switch.
+Initially based on https://github.com/greg6821-debug/RenpySwitch
 
-Загружает исходники RenPy
+Requires https://github.com/SnepOMatic/PyNX_python3_horizonOS_switch
 
-Применяет патчи к RenPy
+Works with https://github.com/SnepOMatic/engine-picker
 
-Компилирует RenPy
+## Note!
 
-Пакует RenPy в lib.zip
-
-Компилирует исполняемый файл для NSwitch
-
-Собирает пустой проект под Switch
-
-## Используемые образы и пакеты
-
-- ubuntu-24.04
-
-- devkitpro/devkita64:20230910
-
-- renpy sdk 7.6.3
-
-- python 3.9
-
-- pefile 2019.4.18
-
-- cython 0.29.36
-
-- setuptools 0.9.8
-
+This is a personal project and therefore carries no warrantee of
+ - it working for you.
+ - being based on any best practices.
+ - being attributed correctly.

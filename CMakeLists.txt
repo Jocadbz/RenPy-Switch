@@ -17,8 +17,8 @@ endif()
 project(renpy-switch C CXX)
 
 set(SWITCH_APP_NAME "Ren'Py")
-set(SWITCH_AUTHOR   "renpytom")
-set(SWITCH_VERSION  "8.3.7")
+set(SWITCH_AUTHOR   "SnepOMatic")
+set(SWITCH_VERSION  "8.5.3")
 
 # ------------------------------------------------------------------------------
 # Build type
@@ -73,11 +73,11 @@ set(INCLUDES
     include/module/src
     include/module/pygame_sdl2
     include/module/pygame_sdl2/src
-	# Добавьте эти пути:
+	# Add these paths:
     ${DEVKITPRO}/portlibs/switch/include
     /usr/include/python3.13
     /usr/local/include/python3.13
-    # Путь к сгенерированным заголовочным файлам pygame_sdl2
+    # Path to generated pygame_sdl2 header files
     ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/build/lib.linux-x86_64-3.13/pygame_sdl2
     ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/src
 	${DEVKITPRO}/portlibs/switch/include

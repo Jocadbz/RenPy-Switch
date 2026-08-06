@@ -1119,12 +1119,10 @@ int main(int argc, char* argv[])
     appletLockExit();
     appletHook(&applet_hook_cookie, on_applet_hook, NULL);
 
-    Py_NoSiteFlag = 1;
-    Py_IgnoreEnvironmentFlag = 1;
-    Py_NoUserSiteDirectory = 1;
-    Py_DontWriteBytecodeFlag = 1;
-    Py_OptimizeFlag = 2;
-
+    /* The legacy Py_* global flags (Py_NoSiteFlag, Py_OptimizeFlag, ...) were removed
+       here: they're deprecated since 3.12 (slated for removal) and redundant — the
+       PyConfig fields set below are their exact equivalents (site_import,
+       use_environment, user_site_directory, write_bytecode, optimization_level). */
     PyConfig config;
 
     PyConfig_InitPythonConfig(&config);
@@ -1195,7 +1193,9 @@ int main(int argc, char* argv[])
     if (PyStatus_Exception(status)) goto exception;
 
    
-    Py_SetProgramName(L"RenPy3.8.7");
+    /* Replaces the deprecated Py_SetProgramName(); set it on the config instead. */
+    status = PyConfig_SetString(&config, &config.program_name, L"RenPy8.5.3");
+    if (PyStatus_Exception(status)) goto exception;
 
 
 
