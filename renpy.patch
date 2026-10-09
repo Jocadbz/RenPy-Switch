@@ -400,7 +400,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
              renpy.game.interface.display_reset = True
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/loader.py renpy-source/renpy/loader.py
 --- .renpy-pristine/renpy/loader.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/loader.py	2026-07-02 16:50:08.436477800 +0100
++++ renpy-source/renpy/loader.py	2026-07-03 22:40:31.738235900 +0100
 @@ -32,6 +32,8 @@
  import unicodedata
  import time
@@ -410,7 +410,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
  from renpy.pygame.rwobject import RWopsIO
  
-@@ -104,6 +106,107 @@
+@@ -104,6 +106,124 @@
          split_apks.append(apks[-1])
  
  
@@ -441,6 +441,10 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 +            if prefix and not name.startswith(prefix):
 +                continue
 +            self.entries[name[plen:]] = zi
++
++        # Ren'Py's loadable_core() checks `prefixed_name in apk.info`, so expose the
++        # entry map under `info` as well (same prefix-stripped keys open()/list() use).
++        self.info = self.entries
 +
 +    def list(self):
 +        return list(self.entries)
@@ -511,6 +515,19 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
 +    if kind != "apk":
 +        split_apks.append(apk)
 +
++    # The file index (common_files/game_files/...) may already have been built by an
++    # earlier listdirfiles()/scandirfiles() that ran BEFORE this apk was mounted (apks
++    # was empty then, so scandirfiles_from_apk added nothing). listdirfiles() only
++    # rescans when BOTH game_files and common_files are empty, so once common_files is
++    # populated the apk would never be scanned. Invalidate the cache here so the next
++    # listdirfiles() re-runs scandirfiles() with this apk present.
++    game_files.clear()
++    common_files.clear()
++    arc_files.clear()
++    loadable_cache.clear()
++    lower_map.clear()
++    tree.clear()
++
 +    print("[switch] mounted game archive %r (kind=%s, root=%r, %d files)" % (
 +        path, kind, root, len(apk.entries)))
 +
@@ -518,7 +535,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  # Files on disk should be checked before archives. Otherwise, among
  # other things, using a new version of bytecode.rpyb will break.
  archives = []
-@@ -249,6 +352,9 @@
+@@ -249,6 +369,9 @@
      if renpy.android:
          find_apks()
  
@@ -528,16 +545,23 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      for _dir, fn in listdirfiles():
          lower_map[unicodedata.normalize("NFC", fn.lower())] = fn
  
-@@ -394,7 +500,7 @@
+@@ -394,8 +517,13 @@
              add(None, f, files, seen)
  
  
 -if renpy.android:
-+if renpy.android or renpy.switch:
-     scandirfiles_callbacks.append(scandirfiles_from_apk)
+-    scandirfiles_callbacks.append(scandirfiles_from_apk)
++# Registered unconditionally: scandirfiles_from_apk() iterates `apks`, which is empty
++# except on Android (find_apks) or Switch (find_switch_archive) — a harmless no-op
++# elsewhere. Gating this on `renpy.switch` at import time was unreliable: loader.py can
++# be imported before renpy.switch is set, so the registration got skipped and the
++# files inside a Switch .apk were never scanned into game_files (game scripts never
++# loaded, even though loadable() — which scans `apks` directly — reported them).
++scandirfiles_callbacks.append(scandirfiles_from_apk)
  
  
-@@ -441,7 +547,7 @@
+ def scandirfiles_from_remote_file(add, seen):
+@@ -441,7 +569,7 @@
          else:
              files = game_files
  
@@ -546,16 +570,20 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
          for j in walkdir(i):
              # Use rpartition as much faster than pathlib and splitext.
-@@ -632,7 +738,7 @@
+@@ -632,8 +760,10 @@
      return None
  
  
 -if renpy.android:
-+if renpy.android or renpy.switch:
-     file_open_callbacks.append(load_from_apk)
+-    file_open_callbacks.append(load_from_apk)
++# Registered unconditionally (same reason as scandirfiles_from_apk above): iterates
++# `apks`, a no-op when empty, and immune to loader.py being imported before
++# renpy.switch is set. Without this, files inside a Switch .apk can't be opened.
++file_open_callbacks.append(load_from_apk)
  
  
-@@ -773,7 +879,7 @@
+ def load_from_remote_file(name):
+@@ -773,7 +903,7 @@
      path = lower_map.get(unicodedata.normalize("NFC", path.lower()), path)
  
      for d in renpy.config.searchpath:
@@ -610,7 +638,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
  
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/main.py renpy-source/renpy/main.py
 --- .renpy-pristine/renpy/main.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/main.py	2026-07-03 15:30:35.516293800 +0100
++++ renpy-source/renpy/main.py	2026-07-03 22:41:04.827843900 +0100
 @@ -294,6 +294,15 @@
          else:
              renpy.config.variants.insert(0, "large")  # type: ignore
@@ -639,6 +667,25 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      # Load Ren'Py extensions.
      search = (renpy.config.renpy_base, *renpy.config.searchpath, os.path.join(renpy.config.gamedir, "libs"))
  
+@@ -400,7 +414,17 @@
+     renpy.exports.load_module("_errorhandling")
+ 
+     if renpy.exports.loadable("tl/None/common.rpym") or renpy.exports.loadable("tl/None/common.rpymc"):
+-        renpy.exports.load_module("tl/None/common")
++        try:
++            renpy.exports.load_module("tl/None/common")
++        except Exception:
++            # Switch: games loaded from an .apk ship tl/None/common as SOURCE (.rpym),
++            # but a module can only be loaded out of an archive when it's pre-compiled
++            # (.rpymc) — load_appropriate_file() won't compile source from an archive.
++            # loadable() sees the raw .rpym and returns True, so we reach here and fail.
++            # tl/None is the base (untranslated) common strings, safe to skip (the game
++            # just uses the original strings), so don't let this abort startup.
++            if not renpy.switch:
++                raise
+ 
+     renpy.config.init_system_styles()
+     renpy.style.build_styles()
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/persistent.py renpy-source/renpy/persistent.py
 --- .renpy-pristine/renpy/persistent.py	2026-03-21 02:53:28.000000000 +0000
 +++ renpy-source/renpy/persistent.py	2026-06-30 17:05:17.220413300 +0100
@@ -694,6 +741,26 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
          if not self.window:
  
              flags |= SDL_WINDOW_HIDDEN
+diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/python.py renpy-source/renpy/python.py
+--- .renpy-pristine/renpy/python.py	2026-05-15 13:54:09.000000000 +0100
++++ renpy-source/renpy/python.py	2026-10-09 20:46:28.601969500 +0100
+@@ -948,6 +948,16 @@
+ 
+         node.end_lineno, node.end_col_offset = end
+ 
++        # Python 3.13's compiler validates that a node's end position is not before its
++        # start, raising "AST node line range (...) is not valid" otherwise. Some cached
++        # screen ASTs (e.g. from games built against older Ren'Py / Python 3.12, which
++        # did not enforce this) carry a stale end position that precedes the start. Clamp
++        # end >= start so compile() accepts them instead of the game dying on screen
++        # preparation (often during change_language -> style rebuild -> prepare_screens).
++        if (node.end_lineno, node.end_col_offset) < (node.lineno, node.col_offset):
++            node.end_lineno = node.lineno
++            node.end_col_offset = node.col_offset
++
+ 
+ def quote_eval(s):
+     """
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/savelocation.py renpy-source/renpy/savelocation.py
 --- .renpy-pristine/renpy/savelocation.py	2026-01-12 02:51:17.000000000 +0000
 +++ renpy-source/renpy/savelocation.py	2026-07-02 13:57:24.918696900 +0100
@@ -773,7 +840,7 @@ diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -
      with scan_thread_condition:
 diff -Naur -x __pycache__ -x '*.pyc' -x '*.pyo' -x .git -x '*.orig' -x '*.rej' -x tmp -x build -x '*.so' .renpy-pristine/renpy/script.py renpy-source/renpy/script.py
 --- .renpy-pristine/renpy/script.py	2026-05-15 13:54:09.000000000 +0100
-+++ renpy-source/renpy/script.py	2026-06-30 17:05:17.255944300 +0100
++++ renpy-source/renpy/script.py	2026-07-03 22:40:53.883096200 +0100
 @@ -900,7 +900,7 @@
                      bad_reduction_name=f"<{fn} transformed rpyc data>",
                  )
