@@ -1,0 +1,146 @@
+--- a/renpy.py
++++ b/renpy.py
+@@ -130,21 +130,13 @@
+             return False
+ 
+     if renpy.switch:
+-        # Every homebrew NRO launched from hbmenu runs under the SAME ProgramId, so
+-        # the mounted "save:" partition is shared across all builds. Isolate each game
+-        # by its config.save_directory (Ren'Py assigns a unique value per project), so
+-        # different games get their own save folder instead of clobbering each other.
+-        # (Different builds/versions of the SAME game keep the same save_directory and
+-        # therefore share saves, which is the desired behaviour for updates.)
+-        sd = save_directory
+-        if isinstance(sd, bytes):
+-            sd = sd.decode("utf-8", "replace")
+-        if sd:
+-            import re
+-            sub = re.sub(r"[^A-Za-z0-9._-]", "_", sd).strip("_")
+-            if sub:
+-                return "save:/Data/" + sub + "/"
+-        return "save:/Data/"
++        # Package identity isolates games, including those without save_directory.
++        # Keep token and script-backup requests separate from ordinary save slots.
++        from switch_platform import data_path
++        if save_directory in ("tokens", b"tokens", "backups", b"backups"):
++            name = save_directory.decode() if isinstance(save_directory, bytes) else save_directory
++            return data_path(name)
++        return data_path("saves")
+ 
+     # Android.
+     if renpy.android:
+@@ -252,7 +244,8 @@
+     import renpy # @UnresolvedImport
+ 
+     if renpy.switch:
+-        return "save:/Logs/"
++        from switch_platform import data_path
++        return data_path("logs")
+ 
+     if renpy.android:
+         return os.environ['ANDROID_PUBLIC']
+--- a/renpy/main.py
++++ b/renpy/main.py
+@@ -361,7 +361,7 @@
+     if renpy.switch:
+         # Keep commondir on the searchpath — it holds the engine's common modules
+         # (_errorhandling, _layout, etc.); without it load_module() fails.
+-        renpy.config.searchpath = [ renpy.config.gamedir, renpy.config.commondir, "save://" ]
++        renpy.config.searchpath = [ renpy.config.gamedir, renpy.config.commondir ]
+ 
+     # Load Ren'Py extensions.
+     search = (renpy.config.renpy_base, *renpy.config.searchpath, os.path.join(renpy.config.gamedir, "libs"))
+--- a/renpy/persistent.py
++++ b/renpy/persistent.py
+@@ -601,7 +601,8 @@
+         files = [renpy.config.savedir]
+ 
+     elif renpy.switch:
+-        files = ["save://MultiPersistent"]
++        from switch_platform import data_path
++        files = [data_path("multipersistent")]
+ 
+     elif renpy.windows:
+         files = [os.path.expanduser("~/RenPy/Persistent")]
+--- a/renpy/exports/restartexports.py
++++ b/renpy/exports/restartexports.py
+@@ -124,20 +124,8 @@
+         terminates.
+     """
+ 
+-    if renpy.switch and not relaunch:
+-        # Switch: a homebrew application cannot cleanly self-exit to the HOME menu —
+-        # svcExitProcess makes qlaunch show a "software was closed" notice (it's not a
+-        # crash; the system just flags any application self-terminating). Official
+-        # Switch titles have no in-game quit; the clean exit is the HOME button, which
+-        # the C OnExitRequest hook handles (committing saves). So neutralize the
+-        # in-game quit across ALL games: tell the player to use HOME instead of
+-        # terminating. (The Quit button is also hidden in standard games via the
+-        # non-"pc" variant, but this covers games with custom screens.)
+-        try:
+-            renpy.exports.notify("Press the HOME button to exit.")
+-        except Exception:
+-            pass
+-        return
++    if renpy.switch and relaunch:
++        raise RuntimeError("Relaunch is unsupported; quit and reopen the NRO from hbmenu.")
+ 
+     if save and (renpy.store._quit_slot is not None):
+         renpy.loadsave.save(renpy.store._quit_slot, getattr(renpy.store, "save_name", ""))
+--- a/renpy/bootstrap.py
++++ b/renpy/bootstrap.py
+@@ -233,6 +233,12 @@
+ 
+     renpy.config.renpy_base = renpy_base
+ 
++    try:
++        import switch_platform
++        switch_platform._log("[boot:5] renpy bootstrap entered")
++    except Exception:
++        pass
++
+     # Handle any file deletions or renamed that were deferred from a previous update.
+ 
+     import renpy.update.deferred
+@@ -348,6 +354,12 @@
+         else:
+             renpy.display.presplash.start(basedir, gamedir)
+ 
++    try:
++        import switch_platform
++        switch_platform._log("[boot:6] presplash finished; importing _renpy")
++    except Exception:
++        pass
++
+     # Ditto for the Ren'Py module.
+     try:
+         import _renpy  # type: ignore
+--- a/renpy/gl2/gl2shadercache.py
++++ b/renpy/gl2/gl2shadercache.py
+@@ -404,7 +404,11 @@
+         fn = "<unknown>"
+ 
+         try:
+-            fn = os.path.join(renpy.config.gamedir, renpy.loader.get_path(self.filename))
++            if renpy.switch:
++                from switch_platform import data_path
++                fn = data_path("cache") + "/shaders.txt"
++            else:
++                fn = os.path.join(renpy.config.gamedir, renpy.loader.get_path(self.filename))
+ 
+             tmp = fn + ".tmp"
+ 
+@@ -434,7 +438,12 @@
+         """
+ 
+         try:
+-            with renpy.loader.load(self.filename) as f:
++            if renpy.switch:
++                from switch_platform import data_path
++                f = io.open(data_path("cache") + "/shaders.txt", "rb")
++            else:
++                f = renpy.loader.load(self.filename)
++            with f:
+                 for l in f:
+                     l = l.strip().decode("utf-8")
+                     partnames = tuple(l.strip().split())

@@ -1,0 +1,17 @@
+{
+  "renpy": {
+    "version": "8.5.3",
+    "url": "https://www.renpy.org/dl/8.5.3/renpy-8.5.3-source.tar.bz2",
+    "sha256": "4fd3d7bca7349b0d182830d3cdcf65940fa32e66be1aea0b3690e048be6282a5"
+  },
+  "python": {
+    "version": "3.13.14",
+    "url": "https://www.python.org/ftp/python/3.13.14/Python-3.13.14.tar.xz",
+    "sha256": "639e43243c620a308f968213df9e00f2f8f62332f7adbaa7a7eeb9783057c690"
+  },
+  "sdk": {
+    "version": "8.5.3",
+    "url": "https://www.renpy.org/dl/8.5.3/renpy-8.5.3-sdk.tar.bz2",
+    "sha256": "eb0a9be7f0fb13632fe25ceade9a8bed5a1b4d6b6e83bd19eeeb29e1a1bb4a45"
+  }
+}

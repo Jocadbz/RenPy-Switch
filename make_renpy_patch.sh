@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # make_renpy_patch.sh — regenerate renpy.patch as the diff between pristine
 # Ren'Py 8.5.3 source and the hand-ported renpy-source tree (our Switch
-# conditionals). setup.bash applies the result with `patch -p1` to its freshly
-# downloaded source.
+# conditionals). tools/build.py applies the result with `patch -p1` to its
+# freshly downloaded, SHA-256-verified source.
 #
 #     bash make_renpy_patch.sh
 set -euo pipefail

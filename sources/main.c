@@ -4,24 +4,18 @@
 #include <string.h>
 #include <wchar.h>
 #include <locale.h>
+#include <errno.h>
+#include <math.h>
+#include <limits.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <EGL/egl.h>
-#include <png.h>
-#include "video_player.h"
-/* Compile the game picker straight into main.o via #include, instead of listing it
-   as a separate CMake source. This sidesteps a mount/cmake-cache flake where CMake
-   kept configuring without game_picker.c (undefined reference to game_picker_run at
-   link). game_picker.c pulls in its own headers (SDL_ttf, zlib, dirent, ...). */
-#include "game_picker.c"
+#include "game_picker.h"
+#include "module_declarations.h"
 
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
-#include <libavutil/imgutils.h>
 #include <malloc.h>
 
 /* -------------------------------------------------------
@@ -33,271 +27,47 @@ AccountUid userID = {0};
 
 /* -------------------------------------------------------
    Crash handler. Native crashes (in SDL/GL/Mesa/libnx) produce no Python
-   traceback, and Ryujinx's GPU debug log shows only "Success", so dump the
-   faulting program counter here. error_desc tells the fault type; PC/LR locate
-   it (subtract the NRO load base, then addr2line on renpy-switch.elf). If this
-   never fires but the app still dies, it's a hang (deadlock), not a crash.
+   traceback, so dump the faulting context here. error_desc=0x101 is a data
+   abort; ESR encodes the exact exception class (EC = esr>>26) and fault
+   status (DFSC = esr&0x3f); FAR is the faulting address. All addresses are
+   also printed relative to &main so the ELF offset is resolvable without
+   knowing the NRO load base (aarch64-none-elf-addr2line accepts
+   "offset" values: (pc - main) + main_offset).
 ------------------------------------------------------- */
 __attribute__((aligned(16))) u8 __nx_exception_stack[0x1000];
 u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 
+/* Referenced by the crash handler for base-independent address resolution. */
+int main(int argc, char *argv[]);
+
+/* Defined by libnx's default heap init. */
+extern char *fake_heap_start;
+extern char *fake_heap_end;
+
 void __libnx_exception_handler(ThreadExceptionDump *ctx)
 {
+    u32 esr = ctx->esr;
     printf("\n[main] *** GUEST CPU EXCEPTION (error_desc=0x%x) ***\n", (unsigned)ctx->error_desc);
-    printf("[main]  PC = 0x%016lx\n", (unsigned long)ctx->pc.x);
-    printf("[main]  LR = 0x%016lx\n", (unsigned long)ctx->lr.x);
-    printf("[main]  SP = 0x%016lx\n", (unsigned long)ctx->sp.x);
+    printf("[main]  esr=0x%08x (EC=0x%02x) far=0x%016lx\n", esr, esr >> 26, (unsigned long)ctx->far.x);
+    printf("[main]  PC = 0x%016lx  (main+0x%lx)\n",
+           (unsigned long)ctx->pc.x, (unsigned long)(ctx->pc.x - (u64)(uintptr_t)&main));
+    printf("[main]  LR = 0x%016lx  (main+0x%lx)\n",
+           (unsigned long)ctx->lr.x, (unsigned long)(ctx->lr.x - (u64)(uintptr_t)&main));
+    printf("[main]  SP = 0x%016lx  FP = 0x%016lx\n",
+           (unsigned long)ctx->sp.x, (unsigned long)ctx->fp.x);
+    printf("[main]  heap %p-%p (%u MiB), applet type %u\n",
+           (void *)fake_heap_start, (void *)fake_heap_end,
+           (unsigned)(((fake_heap_end - fake_heap_start) >> 20) & 0xFFFFFFFFU),
+           (unsigned)appletGetAppletType());
+    for (int i = 0; i < 29; i += 3)
+        printf("[main]  x%-2d=%016lx  x%-2d=%016lx  x%-2d=%016lx\n",
+               i, (unsigned long)ctx->cpu_gprs[i].x,
+               i + 1, (unsigned long)ctx->cpu_gprs[i + 1].x,
+               i + 2, (unsigned long)ctx->cpu_gprs[i + 2].x);
     fflush(stdout);
 }
 
 
-void show_logos(void)
-{
-    printf("=== Showing logos ===\n");
-    
-    // Инициализируем только то, что нужно для логотипов
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0) {
-        printf("SDL_InitSubSystem failed for logos: %s\n", SDL_GetError());
-        return;
-    }
-    
-    int img_flags = IMG_INIT_PNG | IMG_INIT_JPG | IMG_INIT_TIF | IMG_INIT_WEBP;
-    if (!(IMG_Init(img_flags) & img_flags)) {
-        printf("IMG_Init failed: %s\n", IMG_GetError());
-        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
-        return;
-    }
-    
-    // Открываем все доступные контроллеры
-    for (int i = 0; i < SDL_NumJoysticks(); i++) {
-        if (SDL_IsGameController(i)) {
-            SDL_GameController* controller = SDL_GameControllerOpen(i);
-            if (controller) {
-                printf("Opened controller %d: %s\n", i, SDL_GameControllerName(controller));
-            }
-        }
-    }
-    
-    // Создаем окно и рендерер для логотипов
-    SDL_Window* logo_window = SDL_CreateWindow("Logos", 
-                                          SDL_WINDOWPOS_CENTERED, 
-                                          SDL_WINDOWPOS_CENTERED, 
-                                          1280, 720, 
-                                          SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN);
-    
-    if (!logo_window) {
-        printf("SDL_CreateWindow failed: %s\n", SDL_GetError());
-        IMG_Quit();
-        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
-        return;
-    }
-    
-    SDL_Renderer* logo_renderer = SDL_CreateRenderer(logo_window, -1, 
-                                                SDL_RENDERER_ACCELERATED | 
-                                                SDL_RENDERER_PRESENTVSYNC);
-    
-    if (!logo_renderer) {
-        printf("SDL_CreateRenderer failed: %s\n", SDL_GetError());
-        SDL_DestroyWindow(logo_window);
-        IMG_Quit();
-        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
-        return;
-    }
-    
-    // Загружаем логотипы
-    SDL_Texture* logo1 = NULL;
-    SDL_Texture* logo2 = NULL;
-    
-    // Пробуем разные пути для логотипов
-    const char* possible_paths1[] = {
-        "romfs:/nintendologo.png",
-        "romfs:/Contents/nintendologo.png",
-        "sdmc:/nintendologo.png",
-        "nintendologo.png"
-    };
-    
-    const char* possible_paths2[] = {
-        "romfs:/startupmovie.gif",
-        "romfs:/Contents/startupmovie.gif", 
-        "sdmc:/startupmovie.gif",
-        "startupmovie.gif"
-    };
-    
-    // Загружаем первый логотип
-    for (int i = 0; i < 4; i++) {
-        logo1 = IMG_LoadTexture(logo_renderer, possible_paths1[i]);
-        if (logo1) {
-            printf("Loaded logo1 from: %s\n", possible_paths1[i]);
-            break;
-        }
-    }
-    
-    // Загружаем второй логотип
-    for (int i = 0; i < 4; i++) {
-        logo2 = IMG_LoadTexture(logo_renderer, possible_paths2[i]);
-        if (logo2) {
-            printf("Loaded logo2 from: %s\n", possible_paths2[i]);
-            break;
-        }
-    }
-    
-    // Если нет логотипов, выходим
-    if (!logo1 && !logo2) {
-        printf("No logos found, continuing without them\n");
-        SDL_DestroyRenderer(logo_renderer);
-        SDL_DestroyWindow(logo_window);
-        IMG_Quit();
-        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
-        return;
-    }
-    
-    // Получаем размеры экрана
-    int display_width, display_height;
-    SDL_GetWindowSize(logo_window, &display_width, &display_height);
-    printf("Display dimensions: %d x %d\n", display_width, display_height);
-    
-    // Получаем размеры логотипов
-    int logo1_width = 0, logo1_height = 0;
-    int logo2_width = 0, logo2_height = 0;
-    
-    if (logo1) {
-        SDL_QueryTexture(logo1, NULL, NULL, &logo1_width, &logo1_height);
-        printf("Logo1 dimensions: %d x %d\n", logo1_width, logo1_height);
-    }
-    
-    if (logo2) {
-        SDL_QueryTexture(logo2, NULL, NULL, &logo2_width, &logo2_height);
-        printf("Logo2 dimensions: %d x %d\n", logo2_width, logo2_height);
-    }
-    
-    // Позиции логотипов
-    SDL_Rect logo1_rect = {0, 0, logo1_width, logo1_height}; // Левый верхний угол
-    
-    SDL_Rect logo2_rect = {
-        display_width - logo2_width,    // Правый край
-        display_height - logo2_height,  // Нижний край
-        logo2_width,
-        logo2_height
-    };
-    
-    // Основной цикл отображения логотипов
-    Uint32 start_time = SDL_GetTicks();
-    bool running = true;
-    bool skip_requested = false;
-    
-    while (running) {
-        SDL_Event event;
-        
-        // Проверяем события
-        while (SDL_PollEvent(&event)) {
-            switch (event.type) {
-                case SDL_QUIT:
-                    running = false;
-                    skip_requested = true;
-                    break;
-                    
-                case SDL_KEYDOWN:
-                    printf("Key pressed: %s\n", SDL_GetKeyName(event.key.keysym.sym));
-                    running = false;
-                    skip_requested = true;
-                    break;
-                    
-                case SDL_JOYBUTTONDOWN:
-                    printf("Joystick button pressed: joystick=%d, button=%d\n", 
-                           event.jbutton.which, event.jbutton.button);
-                    running = false;
-                    skip_requested = true;
-                    break;
-                    
-                case SDL_CONTROLLERBUTTONDOWN:
-                    printf("Controller button pressed: controller=%d, button=%d\n", 
-                           event.cbutton.which, event.cbutton.button);
-                    running = false;
-                    skip_requested = true;
-                    break;
-                    
-                case SDL_JOYDEVICEADDED:
-                    if (SDL_IsGameController(event.jdevice.which)) {
-                        SDL_GameController* controller = SDL_GameControllerOpen(event.jdevice.which);
-                        if (controller) {
-                            printf("Controller connected: %s\n", SDL_GameControllerName(controller));
-                        }
-                    }
-                    break;
-                    
-                case SDL_JOYDEVICEREMOVED:
-                    printf("Controller disconnected\n");
-                    break;
-            }
-        }
-        
-        // Проверяем таймаут (3 секунды)
-        if (!skip_requested && SDL_GetTicks() - start_time > 3000) {
-            printf("3 seconds elapsed, exiting logos\n");
-            running = false;
-        }
-        
-        // Если запрошен пропуск, показываем черный экран и выходим
-        if (skip_requested) {
-            // Очищаем экран черным
-            SDL_SetRenderDrawColor(logo_renderer, 0, 0, 0, 255);
-            SDL_RenderClear(logo_renderer);
-            SDL_RenderPresent(logo_renderer);
-            
-            // Короткая задержка для отображения черного экрана
-            SDL_Delay(50);
-            break;
-        }
-        
-        // Очищаем экран
-        SDL_SetRenderDrawColor(logo_renderer, 0, 0, 0, 255);
-        SDL_RenderClear(logo_renderer);
-        
-        // Рисуем логотипы
-        if (logo1) {
-            SDL_RenderCopy(logo_renderer, logo1, NULL, &logo1_rect);
-        }
-        
-        if (logo2) {
-            SDL_RenderCopy(logo_renderer, logo2, NULL, &logo2_rect);
-        }
-        
-        // Обновляем экран
-        SDL_RenderPresent(logo_renderer);
-        
-        // Небольшая задержка для экономии CPU
-        SDL_Delay(16);
-    }
-    
-    printf("Logos displayed for %u ms\n", SDL_GetTicks() - start_time);
-    
-    // Очищаем ресурсы логотипов
-    if (logo1) SDL_DestroyTexture(logo1);
-    if (logo2) SDL_DestroyTexture(logo2);
-    
-    // Уничтожаем рендерер и окно логотипов
-    SDL_DestroyRenderer(logo_renderer);
-    SDL_DestroyWindow(logo_window);
-    
-    // Закрываем все контроллеры
-    for (int i = 0; i < SDL_NumJoysticks(); i++) {
-        if (SDL_IsGameController(i)) {
-            SDL_GameControllerClose(SDL_GameControllerFromInstanceID(i));
-        }
-    }
-    
-    // Завершаем только SDL_image
-    IMG_Quit();
-    
-    // Завершаем подсистемы, которые мы инициализировали
-    SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
-    
-    // Важно: небольшая пауза для очистки
-    printf("Pausing to let SDL clean up...\n");
-    svcSleepThread(100000000ULL); // 100ms пауза
-    
-    printf("=== Logos finished ===\n");
-}
 /* -------------------------------------------------------
    _nx module (sleep)
 ------------------------------------------------------- */
@@ -308,7 +78,15 @@ static PyObject* py_nx_sleep(PyObject* self, PyObject* args)
     if (!PyArg_ParseTuple(args, "d", &seconds))
         return NULL;
 
-    uint64_t ns = (uint64_t)(seconds * 1000000000ULL);
+    if (!isfinite(seconds) || seconds < 0.0) {
+        PyErr_SetString(PyExc_ValueError, "sleep duration must be finite and non-negative");
+        return NULL;
+    }
+    if (seconds >= (double)INT64_MAX / 1000000000.0) {
+        PyErr_SetString(PyExc_OverflowError, "sleep duration is too large");
+        return NULL;
+    }
+    int64_t ns = (int64_t)(seconds * 1000000000.0);
 
     Py_BEGIN_ALLOW_THREADS
     svcSleepThread(ns);
@@ -340,7 +118,7 @@ PyMODINIT_FUNC PyInit__nx(void)
 
    Ren'Py's presplash draws to a software SDL surface, which the Switch's GL-only
    window cannot provide. Instead we render the splash image + a progress bar with an
-   SDL_Renderer here (the same proven path show_logos() uses), driven from Python's
+   SDL_Renderer here (the SDL_Renderer path already verified on hardware), driven from Python's
    presplash pump during script load. The window is fully torn down in end() BEFORE
    Ren'Py creates its GL window, so there is never a second window on the single
    nwindow and no SDL_Renderer/GL-context conflict (the reason the old adopt-window
@@ -471,7 +249,7 @@ static PyObject* py_splash_end(PyObject* self, PyObject* args)
     if (g_splash_win) { SDL_DestroyWindow(g_splash_win);   g_splash_win = NULL; }
     IMG_Quit();
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    svcSleepThread(100000000ULL);             /* 100ms settle, mirrors show_logos */
+    svcSleepThread(100000000ULL);             /* 100ms settle before Ren'Py creates its window. */
     printf("[splash] ended\n"); fflush(stdout);
     Py_RETURN_NONE;
 }
@@ -636,108 +414,8 @@ PyMODINIT_FUNC PyInit__otrhlibnx(void)
 }
 
 
-PyMODINIT_FUNC PyInit_color(void);
-PyMODINIT_FUNC PyInit_controller(void);
-PyMODINIT_FUNC PyInit_display(void);
-PyMODINIT_FUNC PyInit_draw(void);
-PyMODINIT_FUNC PyInit_error(void);
-PyMODINIT_FUNC PyInit_event(void);
-PyMODINIT_FUNC PyInit_font(void);
-PyMODINIT_FUNC PyInit_gfxdraw(void);
-PyMODINIT_FUNC PyInit_image(void);
-PyMODINIT_FUNC PyInit_joystick(void);
-PyMODINIT_FUNC PyInit_key(void);
-PyMODINIT_FUNC PyInit_locals(void);
-PyMODINIT_FUNC PyInit_mouse(void);
-PyMODINIT_FUNC PyInit_power(void);
-PyMODINIT_FUNC PyInit_pygame_time(void);
-PyMODINIT_FUNC PyInit_rect(void);
-PyMODINIT_FUNC PyInit_rwobject(void);
-PyMODINIT_FUNC PyInit_scrap(void);
-PyMODINIT_FUNC PyInit_transform(void);
-PyMODINIT_FUNC PyInit_surface(void);
-
-PyMODINIT_FUNC PyInit_render(void);
-PyMODINIT_FUNC PyInit_mixer(void);
-PyMODINIT_FUNC PyInit_mixer_music(void);
-
-
-PyMODINIT_FUNC PyInit__renpy(void);
-PyMODINIT_FUNC PyInit__renpybidi(void);
-
-PyMODINIT_FUNC PyInit_renpy_audio_filter(void);
-PyMODINIT_FUNC PyInit_renpy_audio_renpysound(void);
-PyMODINIT_FUNC PyInit_renpy_encryption(void);
-
-PyMODINIT_FUNC PyInit_renpy_display_accelerator(void);
-PyMODINIT_FUNC PyInit_renpy_display_matrix(void);
-PyMODINIT_FUNC PyInit_renpy_display_quaternion(void);
-PyMODINIT_FUNC PyInit_renpy_display_render(void);
-
-PyMODINIT_FUNC PyInit_renpy_text_ftfont(void);
-PyMODINIT_FUNC PyInit_renpy_text_textsupport(void);
-PyMODINIT_FUNC PyInit_renpy_text_texwrap(void);
-
-PyMODINIT_FUNC PyInit_renpy_lexersupport(void);
-PyMODINIT_FUNC PyInit_renpy_pydict(void);
-PyMODINIT_FUNC PyInit_renpy_style(void);
-
-PyMODINIT_FUNC PyInit_renpy_styledata_style_activate_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_hover_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_idle_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_insensitive_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_selected_activate_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_selected_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_selected_hover_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_selected_idle_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_style_selected_insensitive_functions(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_styleclass(void);
-PyMODINIT_FUNC PyInit_renpy_styledata_stylesets(void);
-
-PyMODINIT_FUNC PyInit_renpy_gl_gldraw(void);
-PyMODINIT_FUNC PyInit_renpy_gl_glenviron_shader(void);
-PyMODINIT_FUNC PyInit_renpy_gl_glrtt_copy(void);
-PyMODINIT_FUNC PyInit_renpy_gl_glrtt_fbo(void);
-PyMODINIT_FUNC PyInit_renpy_gl_gltexture(void);
-
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2draw(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2mesh(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2mesh2(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2mesh3(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2model(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2polygon(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2shader(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2texture(void);
-
-PyMODINIT_FUNC PyInit_renpy_uguu_gl(void);
-PyMODINIT_FUNC PyInit_renpy_uguu_uguu(void);
-
-/* 8.5.3-specific modules (merged pygame, new cython modules) */
-PyMODINIT_FUNC PyInit_renpy_astsupport(void);
-PyMODINIT_FUNC PyInit_renpy_cslots(void);
-PyMODINIT_FUNC PyInit_renpy_gl2_gl2uniform(void);
-PyMODINIT_FUNC PyInit_renpy_text_bidi(void);
-PyMODINIT_FUNC PyInit_renpy_text_hbfont(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_error(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_color(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_controller(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_rect(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_rwobject(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_surface(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_display(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_event(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_locals(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_key(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_mouse(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_joystick(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_power(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_pygame_time(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_image(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_transform(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_gfxdraw(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_draw(void);
-PyMODINIT_FUNC PyInit_renpy_pygame_scrap(void);
+/* Native Ren'Py module initializers are declared in build/generated/
+   module_declarations.h, generated and validated by tools/generate_modules.py. */
 
 
 /* -------------------------------------------------------
@@ -802,89 +480,35 @@ Result createSaveData(void)
    App init / exit
 ------------------------------------------------------- */
 
-void userAppInit()
+static bool sockets_ready;
+static Result romfs_result;
+static bool exit_locked;
+
+void userAppInit(void)
 {
-    nsInitialize();
-    /* fs, sdmc, and the wall-clock time service (timeInitialize + __libnx_init_time)
-       are already brought up by libnx's default __appInit() before this hook runs, so
-       we don't repeat them. The clock matters for saves: without it time() returns
-       epoch 0 and files are stamped 1970. */
-
-    freopen("sdmc:/renpy_switch.log", "a", stdout);
-    /* Don't freopen the SAME file twice — opening renpy_switch.log a second time
-       for append fails on the Switch FS, leaving fd 2 (stderr) dangling and
-       swallowing every Python traceback. Point stderr at stdout's handle (2>&1). */
-    dup2(fileno(stdout), fileno(stderr));
-
+    /* libnx owns fs, sdmc, time and applet services. Homebrew must not create
+       account savedata under the host title's ProgramId. Saves use the SD card. */
+    FILE *log = fopen("sdmc:/renpy_switch.log", "a");
+    if (log) {
+        int fd = fileno(log);
+        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
+            fprintf(log, "[boot] log redirection failed: %s\n", strerror(errno));
+        fclose(log);
+    }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-
-    printf("=== Ren'Py 8 Switch launcher ===\n"); fflush(stdout);
-
-    Result rc = 0;
-    PselUserSelectionSettings settings;
-    
-    rc = svcGetInfo(&cur_progid, InfoType_ProgramId, CUR_PROCESS_HANDLE, 0);
-    rc = accountInitialize(AccountServiceType_Application);
-    rc = accountGetPreselectedUser(&userID);
-    
-    if (R_FAILED(rc)) {
-        s32 count;
-        accountGetUserCount(&count);
-
-        if (count > 1) {
-            // Показываем селектор пользователей
-            rc = pselShowUserSelector(&userID, &settings);
-            
-            // Если пользователь нажал отмену, завершаем программу
-            if (R_FAILED(rc) || !accountUidIsValid(&userID)) {
-                printf("User selection cancelled. Exiting...\n");
-                fflush(stdout);
-                
-                // Даем время для записи лога
-                svcSleepThread(2000000000ULL); // 2 секунды
-                
-                // Завершаем программу
-                exit(0);
-            }
-        } else if (count == 1) {
-            s32 loadedUsers;
-            AccountUid account_ids[1];
-            accountListAllUsers(account_ids, 1, &loadedUsers);
-            if (count > 0) {
-                userID = account_ids[0];
-            }
-        } else {
-            // Нет пользователей - завершаем программу
-            printf("No users found. Exiting...\n");
-            fflush(stdout);
-            svcSleepThread(2000000000ULL);
-            exit(0);
-        }
-    }
-
-    // Дополнительная проверка после всех операций
-    if (!accountUidIsValid(&userID)) {
-        printf("Invalid user selected. Exiting...\n");
-        fflush(stdout);
-        svcSleepThread(2000000000ULL);
-        exit(0);
-    }
-
-    // Если пользователь выбран, продолжаем инициализацию
-    rc = fsdevMountSaveData("save", cur_progid, userID);
-    if (R_FAILED(rc)) {
-        rc = createSaveData();
-        rc = fsdevMountSaveData("save", cur_progid, userID);
-    }
-
-    romfsInit();
-    socketInitializeDefault();
-
-    /* If launched via `nxlink`, redirect stdout/stderr to the nxlink host so we get
-       real-time console output over the network. Returns -1 when not launched via
-       nxlink, in which case the sdmc:/renpy_switch.log redirect above stays active. */
-    nxlinkStdio();
+    printf("\n[boot:1] Ren'Py Switch native entry\n");
+    printf("[boot:1] applet type %u, heap %p-%p\n",
+           (unsigned)appletGetAppletType(), (void *)fake_heap_start, (void *)fake_heap_end);
+    romfs_result = romfsInit();
+    if (R_FAILED(romfs_result))
+        fprintf(stderr, "[boot] romfsInit failed: 0x%08x\n", romfs_result);
+    Result rc = socketInitializeDefault();
+    sockets_ready = R_SUCCEEDED(rc);
+    if (sockets_ready)
+        nxlinkStdio();
+    else
+        fprintf(stderr, "[boot] socketInitializeDefault failed: 0x%08x\n", rc);
 }
 
 void userAppExit(void)
@@ -908,14 +532,16 @@ void userAppExit(void)
            and stopping the scan threads now join them before we reach here.
          - accountExit() / nsExit(): release the account + ns sessions we opened.
        romfs is unmounted by libnx's fsdevUnmountAll(). */
-    appletUnlockExit();
+    if (exit_locked) {
+        appletUnlockExit();
+        exit_locked = false;
+    }
 
     if (fsdevGetDeviceFileSystem("save"))
         fsdevCommitDevice("save");
 
-    socketExit();
-    accountExit();
-    nsExit();
+    if (sockets_ready)
+        socketExit();
 }
 
 /* -------------------------------------------------------
@@ -925,13 +551,14 @@ void userAppExit(void)
 void show_error(const char* message)
 {
     printf("[main] show_error: %s\n", message); fflush(stdout);
-    PyErr_Print();
+    if (Py_IsInitialized() && PyErr_Occurred())
+        PyErr_Print();
 
     ErrorSystemConfig c;
     errorSystemCreate(&c, message, message);
     errorSystemShow(&c);
 
-    Py_Exit(1);
+    exit(EXIT_FAILURE);
 }
 
 static AppletHookCookie applet_hook_cookie;
@@ -1006,61 +633,15 @@ static void show_splash(void)
 
 int main(int argc, char* argv[])
 {
-   	// Проверяем, что пользователь выбран
-    if (!accountUidIsValid(&userID)) {
-        printf("No user selected. Game cannot start.\n");
-        fflush(stdout);
-        svcSleepThread(2000000000ULL); // Даем время для записи в лог
-        return 0;
-    }
+    if (R_FAILED(romfs_result))
+        show_error("Cannot mount the NRO RomFS. See sdmc:/renpy_switch.log.");
 
-    /* Loader build: skip the intro video + logo splash. There's no embedded game
-       (so no game/intro.webm) and no logo assets, so these only no-op — and each
-       does a full SDL/Mesa init+teardown cycle. Dropping them keeps the GPU cycles
-       to picker -> Ren'Py (one re-init, the known-good pattern) and speeds up boot.
-       (Re-enable for an embedded-game build that ships an intro/logos.) */
-    /* video_player_init(); play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f); video_player_quit(); */
-    /* show_logos(); */
-    /* video_player_init(); play_video_file_delay("romfs:/Contents/game/intro.webm", 1, 3.0f); video_player_quit(); */
+    /* No intro video or logo sequence in this build; the splash and
+       Ren'Py itself own the display from here on. */
 
-    /* Boot splash disabled: the leave-window adoption faults on hardware because SDL
-       forbids mixing an SDL_Renderer with a separate GL context on one window. To do
-       this cleanly main.c must create a *raw GL* context (no SDL_Renderer) and Ren'Py
-       must adopt that same context. Until then, keep the known-good boot. */
-    /* show_splash(); */
-
-    printf("[main] video/logos done; configuring Python\n"); fflush(stdout);
-    // printf("=== Testing video playback ===\n");
-    
-    // // Инициализируем видео-плеер
-    // video_player_init();
-    
-    // // 1. Из корня romfs
-    // printf("\n=== Test: romfs:/intro.mp4 ===\n");
-    // play_video_file_delay("romfs:/intro.mp4", 1, 3.0f);
-    
-    // // 2. Из папки Contents в romfs
-    // printf("\n=== Test: romfs:/Contents/intro.mp4 ===\n");
-    // play_video_file_delay("romfs:/Contents/intro.mp4", 1, 1.0f);
-    
-    // // 3. Из папки game/video в romfs
-    // printf("\n=== Test: romfs:/Contents/game/video/intro.mp4 ===\n");
-    // play_video_file_delay("romfs:/Contents/game/video/intro.mp4", 1, 1.0f);
-    
-    // // 4. Относительный путь (будет автоматически разрешен)
-    // printf("\n=== Test: intro.mp4 ===\n");
-    // play_video_file_delay("intro.mp4", 1, 1.0f);
-    
-    // // 5. С SD карты
-    // printf("\n=== Test: sdmc:/intro.mp4 ===\n");
-    // play_video_file_delay("sdmc:/intro.mp4", 1, 1.0f);
-    
-    // // Деинициализируем видео-плеер
-    // video_player_quit();
-   
-    chdir("romfs:/Contents");
+    if (chdir("romfs:/Contents") != 0)
+        show_error("Cannot open romfs:/Contents.");
     setlocale(LC_ALL, "C");
-    setenv("MESA_NO_ERROR", "1", 1);
     /* Force double-buffering. The Switch BufferQueue here only allows 1 acquired
        buffer (2-slot/double-buffered), but Mesa defaults to triple-buffering and
        tries to keep 2 in flight -> "max acquired buffer count: 2 (max: 1)" and a
@@ -1117,6 +698,7 @@ int main(int argc, char* argv[])
     }
 
     appletLockExit();
+    exit_locked = true;
     appletHook(&applet_hook_cookie, on_applet_hook, NULL);
 
     /* The legacy Py_* global flags (Py_NoSiteFlag, Py_OptimizeFlag, ...) were removed
@@ -1125,7 +707,7 @@ int main(int argc, char* argv[])
        use_environment, user_site_directory, write_bytecode, optimization_level). */
     PyConfig config;
 
-    PyConfig_InitPythonConfig(&config);
+    PyConfig_InitIsolatedConfig(&config);
 
      /* ---- Указываем Python'у его местоположение ---- */
     /* Это устранит ошибку "Could not find platform independent libraries" */
@@ -1144,24 +726,24 @@ int main(int argc, char* argv[])
        tell Python to use exactly these paths instead of computing from prefix/home.
        Without this, Py_InitializeFromConfig can't import 'encodings' and aborts. */
     config.module_search_paths_set = 1;
-    PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents/lib.zip");
-    PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents");
-    PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents/renpy/common");
+    status = PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents/lib.zip");
+    if (PyStatus_Exception(status)) goto exception;
+    status = PyWideStringList_Append(&config.module_search_paths, L"romfs:/Contents");
+    if (PyStatus_Exception(status)) goto exception;
    
     /* ---- Critical for Python 3.9 embedded ---- */
     /* Switch has no /dev/urandom and newlib's entropy call fails, which makes
        _Py_HashRandomization_Init abort. Pin a fixed hash seed (0 = randomization
        off) so init never asks the OS for entropy. */
-    config.use_hash_seed = 1;
-    config.hash_seed = 0;
+    config.use_hash_seed = 0;  /* _getentropy_r is backed by libnx randomGet. */
     /* Unbuffered Python stdio so tracebacks reach the log before we exit. */
     config.buffered_stdio = 0;
-    config.isolated = 0;
+    config.isolated = 1;
     config.use_environment = 0;
     config.site_import = 0;
     config.user_site_directory = 0;
     config.write_bytecode = 0;
-    config.optimization_level = 2;
+    config.optimization_level = 0;
     config.verbose = 0;
 
     /* Filesystem encoding */
@@ -1173,15 +755,6 @@ int main(int argc, char* argv[])
     status = PyConfig_SetString(&config,
                                 &config.filesystem_errors,
                                 L"surrogateescape");
-    if (PyStatus_Exception(status)) goto exception;
-
-    /* ---- stdlib: ONLY lib.zip ---- */
-    config.module_search_paths_set = 1;
-
-    status = PyWideStringList_Append(
-        &config.module_search_paths,
-        L"romfs:/Contents/lib.zip"
-    );
     if (PyStatus_Exception(status)) goto exception;
 
     /* ---- argv ---- */
@@ -1202,79 +775,13 @@ int main(int argc, char* argv[])
     /* ---- Builtin modules ---- */
     static struct _inittab builtins[] = {
 
-       //{"pygame_sdl2", PyInit_pygame_sdl2},
-
         {"_nx", PyInit__nx},
         {"_otrhlibnx", PyInit__otrhlibnx},
         {"_switch_splash", PyInit__switch_splash},
 
-        {"renpy.pygame.error", PyInit_renpy_pygame_error},
-        {"renpy.pygame.color", PyInit_renpy_pygame_color},
-        {"renpy.pygame.controller", PyInit_renpy_pygame_controller},
-        {"renpy.pygame.rect", PyInit_renpy_pygame_rect},
-        {"renpy.pygame.rwobject", PyInit_renpy_pygame_rwobject},
-        {"renpy.pygame.surface", PyInit_renpy_pygame_surface},
-        {"renpy.pygame.display", PyInit_renpy_pygame_display},
-        {"renpy.pygame.event", PyInit_renpy_pygame_event},
-        {"renpy.pygame.locals", PyInit_renpy_pygame_locals},
-        {"renpy.pygame.key", PyInit_renpy_pygame_key},
-        {"renpy.pygame.mouse", PyInit_renpy_pygame_mouse},
-        {"renpy.pygame.joystick", PyInit_renpy_pygame_joystick},
-        {"renpy.pygame.power", PyInit_renpy_pygame_power},
-        {"renpy.pygame.pygame_time", PyInit_renpy_pygame_pygame_time},
-        {"renpy.pygame.image", PyInit_renpy_pygame_image},
-        {"renpy.pygame.transform", PyInit_renpy_pygame_transform},
-        {"renpy.pygame.gfxdraw", PyInit_renpy_pygame_gfxdraw},
-        {"renpy.pygame.draw", PyInit_renpy_pygame_draw},
-        {"renpy.pygame.scrap", PyInit_renpy_pygame_scrap},
-
-        {"_renpy", PyInit__renpy},
-        {"renpy.astsupport", PyInit_renpy_astsupport},
-        {"renpy.cslots", PyInit_renpy_cslots},
-
-        {"renpy.audio.filter", PyInit_renpy_audio_filter},
-        {"renpy.audio.renpysound", PyInit_renpy_audio_renpysound},
-        {"renpy.display.accelerator", PyInit_renpy_display_accelerator},
-        {"renpy.display.matrix", PyInit_renpy_display_matrix},
-        {"renpy.display.quaternion", PyInit_renpy_display_quaternion},
-        {"renpy.display.render", PyInit_renpy_display_render},
-        {"renpy.encryption", PyInit_renpy_encryption},
-
-        {"renpy.text.ftfont", PyInit_renpy_text_ftfont},
-        {"renpy.text.textsupport", PyInit_renpy_text_textsupport},
-        {"renpy.text.texwrap", PyInit_renpy_text_texwrap},
-        {"renpy.text.hbfont", PyInit_renpy_text_hbfont},
-        {"renpy.text.bidi", PyInit_renpy_text_bidi},
-        {"renpy.pydict", PyInit_renpy_pydict},
-        {"renpy.lexersupport", PyInit_renpy_lexersupport},
-        {"renpy.style", PyInit_renpy_style},
-        {"renpy.styledata.style_activate_functions", PyInit_renpy_styledata_style_activate_functions},
-        {"renpy.styledata.style_functions", PyInit_renpy_styledata_style_functions},
-        {"renpy.styledata.style_hover_functions", PyInit_renpy_styledata_style_hover_functions},
-        {"renpy.styledata.style_idle_functions", PyInit_renpy_styledata_style_idle_functions},
-        {"renpy.styledata.style_insensitive_functions", PyInit_renpy_styledata_style_insensitive_functions},
-        {"renpy.styledata.style_selected_activate_functions", PyInit_renpy_styledata_style_selected_activate_functions},
-        {"renpy.styledata.style_selected_functions", PyInit_renpy_styledata_style_selected_functions},
-        {"renpy.styledata.style_selected_hover_functions", PyInit_renpy_styledata_style_selected_hover_functions},
-        {"renpy.styledata.style_selected_idle_functions", PyInit_renpy_styledata_style_selected_idle_functions},
-        {"renpy.styledata.style_selected_insensitive_functions", PyInit_renpy_styledata_style_selected_insensitive_functions},
-        {"renpy.styledata.styleclass", PyInit_renpy_styledata_styleclass},
-        {"renpy.styledata.stylesets", PyInit_renpy_styledata_stylesets},
-
-        /* renpy.gl.* (legacy GL renderer) removed in 8.5.3 — gl2 only */
-
-        {"renpy.gl2.gl2draw", PyInit_renpy_gl2_gl2draw},
-        {"renpy.gl2.gl2mesh", PyInit_renpy_gl2_gl2mesh},
-        {"renpy.gl2.gl2mesh2", PyInit_renpy_gl2_gl2mesh2},
-        {"renpy.gl2.gl2mesh3", PyInit_renpy_gl2_gl2mesh3},
-        {"renpy.gl2.gl2model", PyInit_renpy_gl2_gl2model},
-        {"renpy.gl2.gl2polygon", PyInit_renpy_gl2_gl2polygon},
-        {"renpy.gl2.gl2shader", PyInit_renpy_gl2_gl2shader},
-        {"renpy.gl2.gl2texture", PyInit_renpy_gl2_gl2texture},
-        {"renpy.gl2.gl2uniform", PyInit_renpy_gl2_gl2uniform},
-
-        {"renpy.uguu.gl", PyInit_renpy_uguu_gl},
-        {"renpy.uguu.uguu", PyInit_renpy_uguu_uguu},
+        /* Ren'Py native modules: generated and validated by
+           tools/generate_modules.py against setup.py/setuplib.py. */
+#include "module_entries.h"
 
         {NULL, NULL}
     };
@@ -1291,8 +798,26 @@ int main(int argc, char* argv[])
         show_error("Could not find renpy.py");
     }   
 
+    /* Preflight the files the bootstrap imports/reads, so a damaged or stale
+       RomFS fails here with an actionable message instead of surfacing as a
+       generic "could not set the Python path" dialog. */
+    FILE* switch_platform = fopen("romfs:/Contents/switch_platform.py", "rb");
+    if (!switch_platform) {
+        show_error("The packaged runtime is damaged: switch_platform.py is missing from the RomFS.\nRepackage the game with tools/package_game.py.");
+    }
+    fclose(switch_platform);
+
+    if (!have_archive) {
+        FILE* game_json = fopen("romfs:/Contents/switch-game.json", "rb");
+        if (!game_json) {
+            show_error("The packaged game is damaged: switch-game.json is missing from the RomFS.\nRepackage the game with tools/package_game.py.");
+        }
+        fclose(game_json);
+    }
+
     printf("[main] registering builtins + initializing Python\n"); fflush(stdout);
-    PyImport_ExtendInittab(builtins);
+    if (PyImport_ExtendInittab(builtins) < 0)
+        show_error("Cannot register Python builtin modules (out of memory).");
 
     /* ---- Initialize Python ---- */
     printf("[main] calling Py_InitializeFromConfig\n"); fflush(stdout);
@@ -1305,7 +830,7 @@ int main(int argc, char* argv[])
         goto exception;
     }
     PyConfig_Clear(&config);
-    printf("[main] Python initialized OK\n"); fflush(stdout);
+    printf("[boot:2] Python initialized: %s\n", Py_GetVersion()); fflush(stdout);
 
 
     /* 8.5.3: pygame_sdl2 is merged into renpy.pygame; renpy.py imports what it needs. */
@@ -1313,26 +838,49 @@ int main(int argc, char* argv[])
 
     int python_result;
     python_result = PyRun_SimpleString(
-    "import sys, os\n"
-    "sys.path.insert(0, 'romfs:/Contents/lib.zip')\n"
-    /* Log the real platform string CPython was built with, before we override it. */
-    "os.write(1, ('[main] sys.platform (real) = %r\\n' % (sys.platform,)).encode('utf-8','replace'))\n"
-    /* PyNX's CPython doesn't report platform 'horizon', but the whole Switch port
-       keys off `sys.platform == 'horizon'` (renpy/__init__.py sets renpy.switch from
-       it). Force it here so every Switch conditional fires as designed. */
-    "sys.platform = 'horizon'\n"
-    "os.write(1, ('[main] sys.platform (now)  = %r\\n' % (sys.platform,)).encode('utf-8','replace'))\n"
+        "import sys, os, traceback\n"
+        /* Guarded logging: fd 2 first, then the SD log file. Never raises, so a\n"
+           broken stdout/stderr cannot masquerade as a bootstrap failure. */
+        "def _boot_dump(text):\n"
+        "    for sink in (lambda: os.write(2, text.encode('utf-8', 'replace')),\n"
+        "                 lambda: open('sdmc:/renpy_switch.log', 'a').write(text)):\n"
+        "        try:\n"
+        "            sink()\n"
+        "        except BaseException:\n"
+        "            pass\n"
+        "def _boot_fail(step):\n"
+        "    _boot_dump('[boot] FAILED at %s\\n' % step)\n"
+        "    _boot_dump(''.join(traceback.format_exception(*sys.exc_info())))\n"
+        "    raise SystemExit(1)\n"
+        "try:\n"
+        "    _boot_dump('[boot:2.1] sys.platform (real) = %r; sys.path = %r\\n' % (sys.platform, sys.path))\n"
+        "except BaseException:\n"
+        "    _boot_fail('log check')\n"
+        "try:\n"
+        "    sys.platform = 'horizon'\n"
+        "except BaseException:\n"
+        "    _boot_fail('setting sys.platform')\n"
+        "try:\n"
+        "    import switch_platform\n"
+        "    _boot_dump('[boot:2.2] switch_platform imported\\n')\n"
+        "except BaseException:\n"
+        "    _boot_fail('import switch_platform')\n"
+        "try:\n"
+        "    switch_platform.initialize()\n"
+        "    _boot_dump('[boot:2.3] switch_platform initialized\\n')\n"
+        "except BaseException:\n"
+        "    _boot_fail('switch_platform.initialize()')\n"
     );
     
     if (python_result == -1)
     {
-        show_error("Could not set the Python path.\n\nThis is an internal error and should not occur during normal usage.");
+        show_error("Could not set the Python path.\n\nDetails were written to sdmc:/renpy_switch.log");
     }
    #define x(lib) \
     { \
         if (PyRun_SimpleString("import " lib) == -1) \
         { \
-            show_error("Could not import python library " lib ".\n\nPlease ensure that you have extracted the files correctly so that the \"lib\" folder is in the same directory as the nsp file, and that the \"lib\" folder contains the folder \"python3.9\". \nInside that folder, the file \"" lib ".py\" or folder \"" lib "\" needs to exist."); \
+            show_error("Could not import the Python library \"" lib "\".\n\nThe packaged game is damaged; details were written to sdmc:/renpy_switch.log"); \
         } \
     }
 

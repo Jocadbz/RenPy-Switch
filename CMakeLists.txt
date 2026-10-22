@@ -1,352 +1,60 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.24)
 
-# ------------------------------------------------------------------------------
-# Toolchain
-# ------------------------------------------------------------------------------
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     if(DEFINED ENV{DEVKITPRO})
-        set(DEVKITPRO $ENV{DEVKITPRO})
-        set(CMAKE_TOOLCHAIN_FILE
-            "$ENV{DEVKITPRO}/cmake/Switch.cmake"
-            CACHE PATH "toolchain file")
+        set(DEVKITPRO "$ENV{DEVKITPRO}")
     else()
-        message(FATAL_ERROR "Please define DEVKITPRO to point to your SDK path!")
+        set(DEVKITPRO "/opt/devkitpro")
     endif()
+    if(NOT EXISTS "${DEVKITPRO}/cmake/Switch.cmake")
+        message(FATAL_ERROR "Missing devkitPro Switch toolchain. See docs/BUILD.md; set DEVKITPRO for a custom installation.")
+    endif()
+    set(CMAKE_TOOLCHAIN_FILE "${DEVKITPRO}/cmake/Switch.cmake" CACHE FILEPATH "Switch toolchain")
 endif()
 
-project(renpy-switch C CXX)
+project(renpy-switch VERSION 8.5.3 LANGUAGES C CXX)
+if(NOT NINTENDO_SWITCH)
+    message(FATAL_ERROR "This target requires the devkitPro NintendoSwitch toolchain")
+endif()
 
-set(SWITCH_APP_NAME "Ren'Py")
-set(SWITCH_AUTHOR   "SnepOMatic")
-set(SWITCH_VERSION  "8.5.3")
+set(RENPY_SOURCE "${CMAKE_SOURCE_DIR}/build/deps/renpy-8.5.3-source" CACHE PATH "Patched Ren'Py source")
+set(RENPY_GENERATED "${CMAKE_SOURCE_DIR}/build/generated" CACHE PATH "Validated module manifest")
+set(SWITCH_PYTHON "${CMAKE_SOURCE_DIR}/build/python/install" CACHE PATH "Target CPython prefix")
 
-# ------------------------------------------------------------------------------
-# Build type
-# ------------------------------------------------------------------------------
+foreach(required IN ITEMS "${RENPY_GENERATED}/modules.cmake"
+        "${SWITCH_PYTHON}/include/python3.13/Python.h"
+        "${SWITCH_PYTHON}/include/python3.13/pyconfig.h"
+        "${SWITCH_PYTHON}/lib/libpython3.13.a")
+    if(NOT EXISTS "${required}")
+        message(FATAL_ERROR "Missing ${required}. Run python3 tools/build.py first.")
+    endif()
+endforeach()
+
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE RelWithDebInfo)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
-
-# ------------------------------------------------------------------------------
-# Compile definitions (Python / Switch)
-# ------------------------------------------------------------------------------
-add_compile_definitions(
-    __SWITCH__
-    Py_NO_ENABLE_SHARED
-    _GNU_SOURCE
-    SSIZE_MAX=__LONG_MAX__
-)
-
-
-# ------------------------------------------------------------------------------
-# Compiler flags
-# ------------------------------------------------------------------------------
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-set(C_FLAGS
-    -DFRIBIDI_ENTRY=
-    -DHAVE_CONFIG_H=1
-							  
-					
-)
-
-set(OPT_FLAGS
-    # -O2 rather than -Ofast: GCC 16.1.0 (devkitA64) segfaults (ICE) in the -O3/-Ofast
-    # value-numbering passes (fre/pre) on Ren'Py's huge Cython-generated .c files, and
-    # -Ofast's -ffast-math can subtly change FP results. -O2 is well-tested, uses much
-    # less compiler memory, and the runtime difference is negligible (GPU-bound).
-    -O2
-    -fsingle-precision-constant
-    -fno-common
-)
-
-# ------------------------------------------------------------------------------
-# Include paths
-# ------------------------------------------------------------------------------
-set(INCLUDES
-    ${DEVKITPRO}/portlibs/switch/include/python3.13
-    ${DEVKITPRO}/portlibs/switch/include/fribidi
-    include
-    include/module
-	include/module/libhydrogen/impl
-    include/module/src
-    include/module/pygame_sdl2
-    include/module/pygame_sdl2/src
-	# Add these paths:
-    ${DEVKITPRO}/portlibs/switch/include
-    /usr/include/python3.13
-    /usr/local/include/python3.13
-    # Path to generated pygame_sdl2 header files
-    ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/build/lib.linux-x86_64-3.13/pygame_sdl2
-    ${CMAKE_CURRENT_SOURCE_DIR}/pygame_sdl2-source/src
-	${DEVKITPRO}/portlibs/switch/include
-	${CMAKE_SOURCE_DIR}/source
-)
-
-# ------------------------------------------------------------------------------
-# Sources
-# ------------------------------------------------------------------------------
-set(SOURCES
-    source/main.c
-	source/video_player.c
-    source/module/IMG_savepng.c
-    source/module/SDL2_rotozoom.c
-    source/module/SDL_gfxPrimitives.c
-    source/module/_renpy.c
-    source/module/_renpybidi.c
-    source/module/alphablit.c
-    source/module/core.c
-    source/module/ffmedia.c
-    source/module/ftsupport.c
-    source/module/pygame_sdl2.color.c
-    source/module/pygame_sdl2.controller.c
-    source/module/pygame_sdl2.display.c
-    source/module/pygame_sdl2.draw.c
-    source/module/pygame_sdl2.error.c
-    source/module/pygame_sdl2.event.c
-    source/module/pygame_sdl2.font.c
-    source/module/pygame_sdl2.gfxdraw.c
-    source/module/pygame_sdl2.image.c
-    source/module/pygame_sdl2.joystick.c
-    source/module/pygame_sdl2.key.c
-    source/module/pygame_sdl2.locals.c
-    source/module/pygame_sdl2.mixer.c
-    source/module/pygame_sdl2.mixer_music.c
-    source/module/pygame_sdl2.mouse.c
-    source/module/pygame_sdl2.power.c
-    source/module/pygame_sdl2.pygame_time.c
-    source/module/pygame_sdl2.rect.c
-    source/module/pygame_sdl2.render.c
-    source/module/pygame_sdl2.rwobject.c
-    source/module/pygame_sdl2.scrap.c
-    source/module/pygame_sdl2.surface.c
-    source/module/pygame_sdl2.transform.c
-    source/module/renpy.audio.renpysound.c
-	source/module/renpy.audio.filter.c
-    source/module/renpy.display.accelerator.c
-    source/module/renpy.display.matrix.c
-    source/module/renpy.display.render.c
-	source/module/renpy.encryption.c
-    source/module/renpy.gl.gldraw.c
-    source/module/renpy.gl.glenviron_shader.c
-    source/module/renpy.gl.glrtt_copy.c
-    source/module/renpy.gl.glrtt_fbo.c
-    source/module/renpy.gl.gltexture.c
-    source/module/renpy.pydict.c
-    source/module/renpy.style.c
-    source/module/renpy.styledata.style_activate_functions.c
-    source/module/renpy.styledata.style_functions.c
-    source/module/renpy.styledata.style_hover_functions.c
-    source/module/renpy.styledata.style_idle_functions.c
-    source/module/renpy.styledata.style_insensitive_functions.c
-    source/module/renpy.styledata.style_selected_activate_functions.c
-    source/module/renpy.styledata.style_selected_functions.c
-    source/module/renpy.styledata.style_selected_hover_functions.c
-    source/module/renpy.styledata.style_selected_idle_functions.c
-    source/module/renpy.styledata.style_selected_insensitive_functions.c
-    source/module/renpy.styledata.styleclass.c
-    source/module/renpy.styledata.stylesets.c
-    source/module/renpy.text.ftfont.c
-    source/module/renpy.text.textsupport.c
-    source/module/renpy.text.texwrap.c
-    source/module/renpysound_core.c
-    source/module/ttgsubtable.c
-    source/module/write_jpeg.c
-    source/module/write_png.c
-    source/module/renpybidicore.c
-
-							
-    source/module/renpy.gl2.gl2draw.c
-    source/module/renpy.gl2.gl2mesh.c
-    source/module/renpy.gl2.gl2mesh2.c
-    source/module/renpy.gl2.gl2mesh3.c
-    source/module/renpy.gl2.gl2model.c
-    source/module/renpy.gl2.gl2polygon.c
-    source/module/renpy.gl2.gl2shader.c
-    source/module/renpy.gl2.gl2texture.c
-    source/module/renpy.uguu.gl.c
-    source/module/renpy.uguu.uguu.c
-    
-    source/module/renpy.lexersupport.c
-    source/module/renpy.display.quaternion.c
-)
-
-# ------------------------------------------------------------------------------
-# pkg-config
-# ------------------------------------------------------------------------------
 find_package(PkgConfig REQUIRED)
-set(pkgcfg_lib_FREETYPE2_nx /opt/devkitpro/libnx/lib/libnx.a)
-set(pkgcfg_lib_LIBAVFILTER_nx /opt/devkitpro/libnx/lib/libnx.a)
-set(pkgcfg_lib_LIBAVFORMAT_nx /opt/devkitpro/libnx/lib/libnx.a)
-set(pkgcfg_lib_EGL_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/pic/libm.a)
-set(pkgcfg_lib_FREETYPE2_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/pic/libm.a)
-set(pkgcfg_lib_GLAPI_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/pic/libm.a)
-set(pkgcfg_lib_GLESV2_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/pic/libm.a)
-set(pkgcfg_lib_LIBAVCODEC_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_LIBAVFILTER_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_LIBAVFORMAT_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_LIBAVUTIL_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_LIBSWRESAMPLE_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_LIBSWSCALE_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_SDL2_IMAGE_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_SDL2_MIXER_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_SDL2_TTF_m /opt/devkitpro/devkitA64/aarch64-none-elf/lib/libm.a)
-set(pkgcfg_lib_SDL2_EGL /opt/devkitpro/portlibs/switch/lib/libEGL.a)
-set(pkgcfg_lib_SDL2_GFX_EGL /opt/devkitpro/portlibs/switch/lib/libEGL.a)
-set(pkgcfg_lib_SDL2_IMAGE_EGL /opt/devkitpro/portlibs/switch/lib/libEGL.a)
-set(pkgcfg_lib_SDL2_MIXER_EGL /opt/devkitpro/portlibs/switch/lib/libEGL.a)
-set(pkgcfg_lib_SDL2_TTF_EGL /opt/devkitpro/portlibs/switch/lib/libEGL.a)
-set(pkgcfg_lib_LIBDRM_NOUVEAU_drm_nouveau /opt/devkitpro/portlibs/switch/lib/libdrm_nouveau.a)
-set(pkgcfg_lib_SDL2_GFX_drm_nouveau /opt/devkitpro/portlibs/switch/lib/libdrm_nouveau.a)
-set(pkgcfg_lib_SDL2_IMAGE_drm_nouveau /opt/devkitpro/portlibs/switch/lib/libdrm_nouveau.a)
-set(pkgcfg_lib_SDL2_MIXER_drm_nouveau /opt/devkitpro/portlibs/switch/lib/libdrm_nouveau.a)
-set(pkgcfg_lib_SDL2_TTF_drm_nouveau /opt/devkitpro/portlibs/switch/lib/libdrm_nouveau.a)
-set(pkgcfg_lib_SDL2_drm_nouveau /opt/devkitpro/portlibs/switch/lib/libdrm_nouveau.a)
-set(pkgcfg_lib_SDL2_GFX_SDL2 /opt/devkitpro/portlibs/switch/lib/libSDL2.a)
-set(pkgcfg_lib_SDL2_IMAGE_SDL2 /opt/devkitpro/portlibs/switch/lib/libSDL2.a)
-set(pkgcfg_lib_SDL2_MIXER_SDL2 /opt/devkitpro/portlibs/switch/lib/libSDL2.a)
-set(pkgcfg_lib_SDL2_SDL2 /opt/devkitpro/portlibs/switch/lib/libSDL2.a)
-set(pkgcfg_lib_SDL2_TTF_SDL2 /opt/devkitpro/portlibs/switch/lib/libSDL2.a)
-set(pkgcfg_lib_SDL2_IMAGE_z /opt/devkitpro/portlibs/switch/lib/libz.a)
-set(pkgcfg_lib_SDL2_TTF_z /opt/devkitpro/portlibs/switch/lib/libz.a)
-set(pkgcfg_lib_SDL2_GFX_glapi /opt/devkitpro/portlibs/switch/lib/libglapi.a)
-set(pkgcfg_lib_SDL2_IMAGE_glapi /opt/devkitpro/portlibs/switch/lib/libglapi.a)
-set(pkgcfg_lib_SDL2_MIXER_glapi /opt/devkitpro/portlibs/switch/lib/libglapi.a)
-set(pkgcfg_lib_SDL2_TTF_glapi /opt/devkitpro/portlibs/switch/lib/libglapi.a)
-set(pkgcfg_lib_SDL2_glapi /opt/devkitpro/portlibs/switch/lib/libglapi.a)
-set(pkgcfg_lib_SDL2_IMAGE_SDL2_image /opt/devkitpro/portlibs/switch/lib/libSDL2_image.a)
-set(pkgcfg_lib_SDL2_GFX_SDL2_gfx /opt/devkitpro/portlibs/switch/lib/libSDL2_gfx.a)
-set(pkgcfg_lib_SDL2_IMAGE_jpeg /opt/devkitpro/portlibs/switch/lib/libjpeg.a)
-set(pkgcfg_lib_SDL2_IMAGE_png16 /opt/devkitpro/portlibs/switch/lib/libpng16.a)
-set(pkgcfg_lib_SDL2_IMAGE_webp /opt/devkitpro/portlibs/switch/lib/libwebp.a)
-set(pkgcfg_lib_SDL2_MIXER_SDL2_mixer /opt/devkitpro/portlibs/switch/lib/libSDL2_mixer.a)
-set(pkgcfg_lib_SDL2_MIXER_modplug /opt/devkitpro/portlibs/switch/lib/libmodplug.a)
-set(pkgcfg_lib_SDL2_MIXER_mpg123 /opt/devkitpro/portlibs/switch/lib/libmpg123.a)
-set(pkgcfg_lib_SDL2_MIXER_ogg /opt/devkitpro/portlibs/switch/lib/libogg.a)
-set(pkgcfg_lib_SDL2_MIXER_opus /opt/devkitpro/portlibs/switch/lib/libopus.a)
-set(pkgcfg_lib_SDL2_MIXER_opusfile /opt/devkitpro/portlibs/switch/lib/libopusfile.a)
-set(pkgcfg_lib_SDL2_MIXER_stdc++ /opt/devkitpro/devkitA64/aarch64-none-elf/lib/pic/libstdc++.a)
-set(pkgcfg_lib_SDL2_MIXER_vorbisidec /opt/devkitpro/portlibs/switch/lib/libvorbisidec.a)
-set(pkgcfg_lib_SDL2_TTF_SDL2_ttf /opt/devkitpro/portlibs/switch/lib/libSDL2_ttf.a)
-set(pkgcfg_lib_SDL2_TTF_bz2 /opt/devkitpro/portlibs/switch/lib/libbz2.a)
-set(pkgcfg_lib_SDL2_TTF_freetype /opt/devkitpro/portlibs/switch/lib/libfreetype.a)
-set(pkgcfg_lib_SDL2_TTF_png16 /opt/devkitpro/portlibs/switch/lib/libpng16.a)
+pkg_check_modules(ENGINE REQUIRED IMPORTED_TARGET
+    sdl2 SDL2_image SDL2_ttf egl glesv2
+    libavformat libavcodec libavutil libswresample libswscale
+    harfbuzz freetype2 fribidi zlib)
 
-pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
-pkg_check_modules(FREETYPE2 REQUIRED IMPORTED_TARGET freetype2)
-pkg_check_modules(GLAPI REQUIRED IMPORTED_TARGET glapi)
-pkg_check_modules(GLESV2 REQUIRED IMPORTED_TARGET glesv2)
-pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec)
-pkg_check_modules(LIBAVFILTER REQUIRED IMPORTED_TARGET libavfilter)
-pkg_check_modules(LIBAVFORMAT REQUIRED IMPORTED_TARGET libavformat)
-pkg_check_modules(LIBAVUTIL REQUIRED IMPORTED_TARGET libavutil)
-pkg_check_modules(LIBDRM_NOUVEAU REQUIRED IMPORTED_TARGET libdrm_nouveau)
-pkg_check_modules(LIBSWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
-pkg_check_modules(LIBSWSCALE REQUIRED IMPORTED_TARGET libswscale)
-pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-pkg_check_modules(SDL2_GFX REQUIRED IMPORTED_TARGET SDL2_gfx)
-pkg_check_modules(SDL2_IMAGE REQUIRED IMPORTED_TARGET SDL2_image)
-pkg_check_modules(SDL2_MIXER REQUIRED IMPORTED_TARGET SDL2_mixer)
-pkg_check_modules(SDL2_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
-pkg_check_modules(ZLIB REQUIRED IMPORTED_TARGET zlib)
-
-# ---- FIX: pkg-config uses $(DEVKITPRO) which CMake cannot expand ----
-get_target_property(_drm_includes PkgConfig::LIBDRM_NOUVEAU INTERFACE_INCLUDE_DIRECTORIES)
-
-if(_drm_includes)
-    set(_fixed_includes "")
-    foreach(dir IN LISTS _drm_includes)
-        if(dir MATCHES "\\$\\(DEVKITPRO\\)")
-            string(REPLACE "\$(DEVKITPRO)" "${DEVKITPRO}" dir "${dir}")
-        endif()
-        list(APPEND _fixed_includes "${dir}")
-    endforeach()
-
-    set_target_properties(PkgConfig::LIBDRM_NOUVEAU PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${_fixed_includes}"
-    )
-endif()
-
-# ------------------------------------------------------------------------------
-# Executable
-# ------------------------------------------------------------------------------
-# 8.5.3: glob the gathered sources (overrides the stale hardcoded SOURCES list above).
-file(GLOB SOURCES
-    ${CMAKE_SOURCE_DIR}/source/main.c
-    ${CMAKE_SOURCE_DIR}/source/video_player.c
-    ${CMAKE_SOURCE_DIR}/source/module/*.c
-    ${CMAKE_SOURCE_DIR}/source/module/*.cc
-)
-
-add_executable(renpy-switch
-    ${SOURCES}
-)
-
-set_target_properties(renpy-switch PROPERTIES
-    LINKER_LANGUAGE CXX
-)
-
-# 8.5.3 layout: flat include/module + libhydrogen subdirs + portlibs headers.
-list(APPEND INCLUDES
-    ${DEVKITPRO}/portlibs/switch/include/harfbuzz
-    ${DEVKITPRO}/portlibs/switch/include/freetype2
-    ${DEVKITPRO}/portlibs/switch/include/SDL2
-    include/module/libhydrogen
-    include/module/libhydrogen/impl
-    include/module/libhydrogen/impl/random
-    source/module
-    # original 8.5.3 source trees, so path-qualified includes ("pygame/x.h",
-    # "renpy/x.h", cython *_api.h) resolve against the real structure
-    ${CMAKE_SOURCE_DIR}/renpy-source/src
-    ${CMAKE_SOURCE_DIR}/renpy-source/src/libhydrogen
-    ${CMAKE_SOURCE_DIR}/renpy-source/src/libhydrogen/impl
-    ${CMAKE_SOURCE_DIR}/renpy-source/src/libhydrogen/impl/random
-    ${CMAKE_SOURCE_DIR}/renpy-source
-    ${CMAKE_SOURCE_DIR}/renpy-source/tmp/gen3-static
-)
-
-target_include_directories(renpy-switch PRIVATE ${INCLUDES})
-
-target_compile_options(renpy-switch PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:${C_FLAGS}>
-    $<$<CONFIG:RELEASE>:${OPT_FLAGS}>
-    $<$<CONFIG:RELWITHDEBINFO>:${OPT_FLAGS}>
-)
-
-
-target_link_libraries(renpy-switch
-    ${DEVKITPRO}/portlibs/switch/lib/libpython3.13.a
-    ${DEVKITPRO}/portlibs/switch/lib/libfribidi.a
-    m
-    z
-    PkgConfig::EGL
-    PkgConfig::FREETYPE2
-    PkgConfig::GLAPI
-    PkgConfig::GLESV2
-    PkgConfig::LIBAVCODEC
-    PkgConfig::LIBAVFILTER
-    PkgConfig::LIBAVFORMAT
-    PkgConfig::LIBAVUTIL
-    PkgConfig::LIBDRM_NOUVEAU
-    PkgConfig::LIBSWRESAMPLE
-    PkgConfig::LIBSWSCALE
-    PkgConfig::SDL2
-    PkgConfig::SDL2_GFX
-    PkgConfig::SDL2_IMAGE
-    PkgConfig::SDL2_MIXER
-    PkgConfig::SDL2_TTF
-    PkgConfig::ZLIB
-)
-
-# ------------------------------------------------------------------------------
-# ELF -> NSO
-# ------------------------------------------------------------------------------
-add_custom_command(
-    TARGET renpy-switch
-    POST_BUILD
-    COMMAND ${DEVKITPRO}/tools/bin/elf2nso
-            $<TARGET_FILE:renpy-switch>
-            renpy-switch.nso
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
+include("${RENPY_GENERATED}/modules.cmake")
+add_executable(renpy-switch sources/main.c sources/game_picker.c sources/switch_stubs.c
+    ${RENPY_MODULE_SOURCES})
+set_target_properties(renpy-switch PROPERTIES LINKER_LANGUAGE CXX)
+target_compile_definitions(renpy-switch PRIVATE Py_NO_ENABLE_SHARED _GNU_SOURCE
+    SSIZE_MAX=__LONG_MAX__ HAVE_CONFIG_H=1)
+target_compile_options(renpy-switch PRIVATE -O2 -fno-common)
+target_include_directories(renpy-switch PRIVATE
+    "${SWITCH_PYTHON}/include/python3.13" "${RENPY_GENERATED}"
+    "${RENPY_SOURCE}/src" "${RENPY_SOURCE}" "${RENPY_SOURCE}/tmp/gen3-static")
+# switch-pkg-config emits static transitive dependencies. The rescan group also
+# resolves cycles between Python, extension modules and static multimedia libs.
+target_link_libraries(renpy-switch PRIVATE
+    "-Wl,--start-group" "${SWITCH_PYTHON}/lib/libpython3.13.a"
+    PkgConfig::ENGINE bz2 nx m "-Wl,--end-group")
+target_link_options(renpy-switch PRIVATE "-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/renpy-switch.map")

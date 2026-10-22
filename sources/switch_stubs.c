@@ -1,6 +1,7 @@
 /*
  * Stubs for POSIX functions that newlib/Horizon declares but does not implement,
- * yet are referenced by CPython's posixmodule / pthread layer and ffmedia.c.
+ * yet are referenced by CPython's posixmodule / pthread layer and the FFmpeg
+ * media backend.
  * Ren'Py never exercises these on Switch (process/fs syscalls are disabled and
  * video uses SDL allocation), so an ENOSYS stub is safe and just satisfies the linker.
  */
@@ -20,7 +21,10 @@ extern void randomGet(void *buf, size_t len);   /* libnx, resolved via -lnx */
 
 int _getentropy_r(struct _reent *r, void *buf, size_t len)
 {
-    (void)r;
+    if (len > 256) {
+        r->_errno = EIO;
+        return -1;
+    }
     randomGet(buf, len);
     return 0;
 }
@@ -54,6 +58,9 @@ long sysconf(int name)
 
 int posix_memalign(void **memptr, size_t alignment, size_t size)
 {
+    if (alignment < sizeof(void *) || (alignment & (alignment - 1)) != 0) {
+        return EINVAL;
+    }
     void *p = memalign(alignment, size);
     if (p == NULL) {
         return ENOMEM;
