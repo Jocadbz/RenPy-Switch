@@ -1,9 +1,34 @@
 # Ren'Py for Nintendo Switch
 
-Native [Ren'Py](https://www.renpy.org/) engine for the Nintendo Switch,
-based on the SnepOMatic/RenPy-Switch port and rebuilt as a reproducible,
-fail-fast pipeline. Currently targets **Ren'Py 8.5.3** with a static
-**CPython 3.13.14**.
+Native [Ren'Py](https://www.renpy.org/) engine for the Nintendo Switch.
+
+## Credits
+
+**All credit for the Switch port belongs to
+[SnepOMatic](https://github.com/SnepOMatic) and the
+[SnepOMatic/RenPy-Switch](https://github.com/SnepOMatic/RenPy-Switch)
+project.** Everything that makes Ren'Py run on the Switch is their work:
+
+- the engine platform patch (`renpy.patch`),
+- the native launcher (`sources/main.c`),
+- the splash screen and game picker (`sources/game_picker.c`),
+- the libnx adaptations, POSIX shims and storage handling,
+- the years of device-specific debugging (Mesa/nouveau behavior, heap
+  sizing, reload crashes) reflected in that code.
+
+This repository does **not** re-implement any of that. It only makes the
+existing port easier to build and use, by:
+
+- pinning all downloads with SHA-256 hashes,
+- building the static CPython in-tree (replacing the external PyNX
+  dependency),
+- providing a fail-fast, unprivileged build script (`tools/build.py`)
+  instead of the machine-specific setup,
+- adding a validating game packager (`tools/package_game.py`),
+- documenting and recording what has actually been verified on hardware.
+
+If you're looking for the port itself, it lives upstream — this is a
+simpler way to build and package it.
 
 ## Status
 
@@ -20,7 +45,7 @@ honest accounting of what is and is not verified.
 
 ## Requirements
 
-- Arch Linux (or any distro with the same devkitPro packages) + `fish` or any shell
+- Arch Linux (or any distro with the same devkitPro packages) + any shell
 - devkitPro: `devkit-env devkitA64 devkita64-cmake switch-dev switch-mesa
   switch-sdl2 switch-sdl2_image switch-sdl2_ttf switch-ffmpeg switch-freetype
   switch-harfbuzz switch-libfribidi switch-zlib switch-bzip2 rsync`
