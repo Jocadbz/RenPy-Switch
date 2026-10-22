@@ -103,3 +103,26 @@ FFmpeg and other dependencies have their own terms. Packaged NROs ship the
 corresponding license texts. **This repository has no license grant for its own
 port files yet** — the original repo did not carry one, and none is invented
 here. Choose and add one before redistributing.
+
+## Original README (upstream)
+
+The upstream repository's README, reproduced in full. (It advertises
+Ren'Py 8.5.7, while the code targets 8.5.3.)
+
+```text
+## Description
+
+Ren'Py 8.5.7 for Switch.
+Initially based on https://github.com/greg6821-debug/RenpySwitch
+
+Requires https://github.com/SnepOMatic/PyNX_python3_horizonOS_switch
+
+Works with https://github.com/SnepOMatic/engine-picker
+
+## Note!
+
+This is a personal project and therefore carries no warrantee of
+ - it working for you.
+ - being based on any best practices.
+ - being attributed correctly.
+```
